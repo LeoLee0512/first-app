@@ -265,6 +265,7 @@ const state = {
   currentUser: null,
   entitlements: null,
   result: null,
+  expansion: {},
   lastProject: null,
   lastScope: "whole",
   projectMetadata: { name: "canvas_project" },
@@ -1285,6 +1286,10 @@ function elementAtScreen(x, y) {
 }
 
 function elementDistanceAtScreen(element, point, a, b) {
+  if (elementGeometryOf(element) === "right_angle") {
+    const elbow = { x: b.x, y: a.y };
+    return Math.min(pointToSegmentDistance(point, a, elbow), pointToSegmentDistance(point, elbow, b));
+  }
   if (elementGeometryOf(element) !== "arc" && elementGeometryOf(element) !== "freeform") return pointToSegmentDistance(point, a, b);
   if (elementGeometryOf(element) === "freeform" && Array.isArray(element.path) && element.path.length > 1) {
     const points = element.path.map((item) => worldToScreen(item));
@@ -1623,7 +1628,11 @@ function deleteSelection() {
 function buildProject(options = {}) {
   const scope = options.scope || "whole";
   const model = scopedModel(scope);
-  return {
+  // Arc / right-angle / free-form members are split into straight segments
+  // for the solver; `expansion` maps each parent member to its segments and
+  // travels with the project object without being serialised.
+  const expanded = GeometryDiscretize.expandModel(model);
+  const project = {
     schema: ProjectAdapter.STATIC_SCHEMA,
     application: ProjectAdapter.APPLICATION_ID,
     module: "statics",
@@ -1634,7 +1643,7 @@ function buildProject(options = {}) {
     solver: els.solverBackend.value,
     materials: [{ id: "steel", E: els.materialE.value, nu: 0.3 }],
     sections: [{ id: "default", A: els.sectionA.value, I: els.sectionI.value }],
-    nodes: model.nodes.map((node) => ({
+    nodes: expanded.nodes.map((node) => ({
       id: node.id,
       x: `${node.x} m`,
       y: `${node.y} m`,
@@ -1642,8 +1651,9 @@ function buildProject(options = {}) {
       support: node.support || { type: "free", angle: 0, mode: "free" },
       support_angle: supportAngleOf(node),
       fused: Boolean(node.fused),
+      ...(node.parent ? { parent: node.parent } : {}),
     })),
-    elements: model.elements.map((element) => ({
+    elements: expanded.elements.map((element) => ({
       id: element.id,
       node_i: element.node_i,
       node_j: element.node_j,
@@ -1655,31 +1665,28 @@ function buildProject(options = {}) {
       arcAngle: Number(element.arcAngle || 45),
       teeDepth: element.teeDepth || "0.35 m",
       sectionParams: element.sectionParams || {},
+      ...(element.parent && element.parent !== element.id ? { parent: element.parent } : {}),
     })),
     loads: {
       nodes: projectNodalLoads(model),
-      elements: projectElementLoads(model),
+      elements: expanded.elementLoads,
     },
   };
+  Object.defineProperty(project, "expansion", { value: expanded.expansion, enumerable: false });
+  return project;
+}
+
+function discretisationLines(expansion) {
+  const lines = [];
+  for (const [parent, info] of Object.entries(expansion || {})) {
+    if (!info) continue;
+    lines.push(`- ${parent}：${geometryLabel(info.geometry)}，沿绘制路径离散为 ${info.segments.length} 段直杆（总弧长 ${formatNumber(info.length)} m），结果已按母杆件合并。`);
+  }
+  return lines;
 }
 
 function solverElementType(element) {
   return ProjectAdapter.solverElementType(element);
-}
-
-function projectElementLoads(model) {
-  const distributedLoads = model.elementLoads.map((load) => ({ ...load }));
-  const pointLoads = model.loads
-    .filter((load) => load.kind === "element_point" && load.element)
-    .map((load) => ({
-      element: load.element,
-      kind: "point_global",
-      ratio: Math.max(0, Math.min(1, Number(load.ratio ?? 0.5))),
-      fx: load.fx || "0 N",
-      fy: load.fy || "0 N",
-      mz: load.mz || "0 N*m",
-    }));
-  return [...distributedLoads, ...pointLoads];
 }
 
 function projectNodalLoads(model) {
@@ -2137,16 +2144,11 @@ function makeElementPointMomentLoad(elementId, ratio) {
 }
 
 function elementRatioAtScreen(element, point) {
-  const nodeI = getNode(element.node_i);
-  const nodeJ = getNode(element.node_j);
-  if (!nodeI || !nodeJ) return 0.5;
-  const a = worldToScreen(nodeI);
-  const b = worldToScreen(nodeJ);
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const length2 = dx * dx + dy * dy;
-  if (!length2) return 0.5;
-  return Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length2));
+  // Ratio is measured along the drawn path (arc length), which is also how
+  // loads are mapped onto the solver segments of curved members.
+  const path = elementScreenPath(element);
+  if (path.length < 2) return 0.5;
+  return GeometryDiscretize.pathRatioAtPoint(path, point);
 }
 
 function elementLengthWorld(element) {
@@ -2316,10 +2318,11 @@ async function solveProject(scope = "whole") {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(translateSolverError(payload.error || "求解失败。"));
-    state.result = payload;
+    state.result = GeometryDiscretize.mergeResult(payload, project.expansion);
+    state.expansion = project.expansion || {};
     state.lastProject = project;
     state.lastScope = scope;
-    els.resultText.textContent = formatResult(payload, project, scope);
+    els.resultText.textContent = formatResult(state.result, project, scope);
     applySolveDisplayOptions();
     showToast("求解完成。");
     draw();
@@ -2350,6 +2353,13 @@ function formatResult(payload, project, scope) {
     `体系判断：${systemJudgementText(payload)}`,
     "",
   ];
+
+  const discretised = discretisationLines(project.expansion);
+  if (discretised.length) {
+    lines.push("几何离散");
+    lines.push(...discretised);
+    lines.push("");
+  }
 
   appendDiagnosticsResult(lines, summary.diagnostics);
 
@@ -4640,10 +4650,8 @@ function drawElementPointLoad(load) {
   const nodeI = getNode(element.node_i);
   const nodeJ = getNode(element.node_j);
   if (!nodeI || !nodeJ) return;
-  const a = worldToScreen(nodeI);
-  const b = worldToScreen(nodeJ);
   const ratio = Math.max(0, Math.min(1, Number(load.ratio ?? 0.5)));
-  const point = { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio };
+  const point = GeometryDiscretize.pointAtPathRatio(elementScreenPath(element), ratio);
   const fx = quantityToNumber(load.fx, "N");
   const fy = quantityToNumber(load.fy, "N");
   const magnitude = Math.hypot(fx, fy);
@@ -4760,19 +4768,43 @@ function drawDeformedShape() {
   ctx.setLineDash([8, 6]);
   ctx.lineWidth = 2;
   for (const element of state.elements) {
-    const a = deformedScreenPoint(getNode(element.node_i), factor);
-    const b = deformedScreenPoint(getNode(element.node_j), factor);
-    line(a, b);
+    const nodeI = getNode(element.node_i);
+    const nodeJ = getNode(element.node_j);
+    if (!nodeI || !nodeJ) continue;
+    const info = state.expansion && state.expansion[element.id];
+    if (info && info.segments.length) {
+      // Discretised member: follow the sub-node chain with the raw solver displacements.
+      const points = [deformedScreenPoint(nodeI, factor)];
+      info.segments.forEach((segment, index) => {
+        const nodeId = info.nodeIds[index + 1];
+        const world = index === info.segments.length - 1 ? nodeJ : { id: nodeId, x: segment.to.x, y: segment.to.y };
+        points.push(deformedScreenPoint(world, factor));
+      });
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+      continue;
+    }
+    line(deformedScreenPoint(nodeI, factor), deformedScreenPoint(nodeJ, factor));
   }
   ctx.restore();
 }
 
 function deformedScreenPoint(node, factor) {
-  const displacement = (state.result.displacements && state.result.displacements[node.id]) || {};
+  const source = (state.result && state.result.raw && state.result.raw.displacements) || (state.result && state.result.displacements) || {};
+  const displacement = source[node.id] || {};
   return worldToScreen({
     x: node.x + Number(displacement.ux || 0) * factor,
     y: node.y + Number(displacement.uy || 0) * factor,
   });
+}
+
+function elementScreenPath(element) {
+  const nodeI = getNode(element.node_i);
+  const nodeJ = getNode(element.node_j);
+  if (!nodeI || !nodeJ) return [];
+  return GeometryDiscretize.elementPath(element, nodeI, nodeJ).map((point) => worldToScreen(point));
 }
 
 function drawDiagrams() {
