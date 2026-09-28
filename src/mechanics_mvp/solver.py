@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from .models import DOFS, AnalysisResult, Element, ElementLoad, Project
+from .models import DOFS, AnalysisResult, Element, ElementLoad, Node, Project
 from .preprocess import validate_project
 
 REACTION_LABELS = {"ux": "fx", "uy": "fy", "rz": "mz"}
@@ -71,24 +71,35 @@ class Frame2DSolver:
                 if is_restrained:
                     restrained.append(dof_index[(node.id, DOFS[dof_pos])])
 
+        # Inclined supports: rotate the translational DOFs of every node with a
+        # support angle into the support axes (x' along the ground, y' normal to
+        # it) with the block-diagonal matrix T, so the restraints can be applied
+        # as ordinary fixed DOFs: K' = T K Tᵀ, P' = T P, u = Tᵀ u'.
+        support_rotation = _support_rotation(project, dof_index)
+        rotated_stiffness = support_rotation @ stiffness @ support_rotation.T
+        rotated_loads = support_rotation @ loads
+
         all_dofs = np.arange(total_dofs)
         free = np.array([index for index in all_dofs if index not in restrained], dtype=int)
-        free = _active_free_dofs(stiffness, loads, free)
+        free = _active_free_dofs(rotated_stiffness, rotated_loads, free)
         restrained_array = np.array(restrained, dtype=int)
 
         if free.size == 0:
             raise SolverError("Model has no free degrees of freedom.")
 
-        k_ff = stiffness[np.ix_(free, free)]
-        p_f = loads[free]
-        displacements = np.zeros(total_dofs, dtype=float)
+        k_ff = rotated_stiffness[np.ix_(free, free)]
+        p_f = rotated_loads[free]
+        rotated_displacements = np.zeros(total_dofs, dtype=float)
         try:
-            displacements[free] = np.linalg.solve(k_ff, p_f)
+            rotated_displacements[free] = np.linalg.solve(k_ff, p_f)
         except np.linalg.LinAlgError as exc:
             raise SolverError(
                 "Stiffness matrix is singular. Check restraints, disconnected geometry, or mechanisms."
             ) from exc
 
+        displacements = support_rotation.T @ rotated_displacements
+        # Reactions are evaluated in global axes; an inclined support therefore
+        # reports both global components of its single normal reaction.
         reactions_vector = stiffness @ displacements - loads
 
         displacement_map = _map_node_vectors(project, displacements, dof_index)
@@ -449,6 +460,34 @@ def _element_indexes(element: Element, dof_index: dict[tuple[str, str], int]) ->
     ]
 
 
+def _is_inclined(node: Node) -> bool:
+    return abs(math.remainder(float(node.support_angle), 360.0)) > 1e-9
+
+
+def _support_rotation(project: Project, dof_index: dict[tuple[str, str], int]) -> np.ndarray:
+    """Block-diagonal rotation from global nodal DOFs to support-aligned DOFs.
+
+    For a node whose support is rotated by θ (counter-clockwise), the support
+    axes are x' = (cos θ, sin θ) and y' = (-sin θ, cos θ); ``u' = T u``.
+    Rotations rz are unchanged. Nodes without an angle keep the identity.
+    """
+
+    size = len(project.nodes) * len(DOFS)
+    rotation = np.eye(size, dtype=float)
+    for node in project.nodes:
+        if not _is_inclined(node):
+            continue
+        angle = math.radians(float(node.support_angle))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        ux = dof_index[(node.id, "ux")]
+        uy = dof_index[(node.id, "uy")]
+        rotation[ux, ux] = cosine
+        rotation[ux, uy] = sine
+        rotation[uy, ux] = -sine
+        rotation[uy, uy] = cosine
+    return rotation
+
+
 def _element_by_id(project: Project, element_id: str) -> Element:
     for element in project.elements:
         if element.id == element_id:
@@ -477,9 +516,10 @@ def _map_reactions(
     result: dict[str, dict[str, float]] = {}
     for node in project.nodes:
         node_reactions: dict[str, float] = {}
+        inclined_translation = _is_inclined(node) and (node.restraints[0] or node.restraints[1])
         for dof in DOFS:
             index = dof_index[(node.id, dof)]
-            if index in restrained_set:
+            if index in restrained_set or (inclined_translation and dof in ("ux", "uy")):
                 node_reactions[REACTION_LABELS[dof]] = float(reactions[index])
         if node_reactions:
             result[node.id] = node_reactions

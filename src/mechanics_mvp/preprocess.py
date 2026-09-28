@@ -62,6 +62,10 @@ def validate_project(project: Project) -> None:
         connected[element.node_i] += 1
         connected[element.node_j] += 1
 
+    for node in project.nodes:
+        if not math.isfinite(node.support_angle):
+            raise ValidationError(f"Node {node.id} has a non-finite support_angle.")
+
     isolated = [node.id for node in project.nodes if connected[node.id] == 0]
     if isolated:
         raise ValidationError(f"Isolated nodes are not allowed: {', '.join(isolated)}.")

@@ -47,6 +47,7 @@ def _parse_node(raw: dict[str, Any]) -> Node:
         x=to_si(raw["x"], default_unit="m"),
         y=to_si(raw.get("y", 0.0), default_unit="m"),
         restraints=_parse_restraints(raw.get("restraints", ())),
+        support_angle=float(raw.get("support_angle", 0.0) or 0.0),
     )
 
 

@@ -234,6 +234,7 @@
         assertPlainObject(node.support, `节点 ${node.id} 的 support`);
         if (node.support.angle !== undefined) assertFiniteNumber(node.support.angle, `节点 ${node.id} 的 support.angle`);
       }
+      if (node.support_angle !== undefined) assertFiniteNumber(node.support_angle, `节点 ${node.id} 的 support_angle`);
     });
     return ids;
   }

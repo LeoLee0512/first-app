@@ -1640,6 +1640,7 @@ function buildProject(options = {}) {
       y: `${node.y} m`,
       restraints: restraintsToList(node.restraints),
       support: node.support || { type: "free", angle: 0, mode: "free" },
+      support_angle: supportAngleOf(node),
       fused: Boolean(node.fused),
     })),
     elements: model.elements.map((element) => ({
@@ -1734,7 +1735,7 @@ function importProject(rawProject) {
     x: quantityToNumber(node.x ?? 0, "m"),
     y: quantityToNumber(node.y ?? 0, "m"),
     restraints: parseRestraints(node.restraints),
-    support: parseSupport(node.support, node.restraints),
+    support: parseSupport(node.support, node.restraints, node.support_angle),
     fused: Boolean(node.fused),
   }));
   const nextElements = project.elements.map((element, index) => ({
@@ -1824,20 +1825,27 @@ function importProject(rawProject) {
   draw();
 }
 
-function parseSupport(raw, restraints) {
+function parseSupport(raw, restraints, supportAngle) {
+  const fallbackAngle = Number.isFinite(Number(supportAngle)) ? Number(supportAngle) : 0;
   if (raw && typeof raw === "object") {
+    const angle = Number(raw.angle);
     return {
       type: String(raw.type || "free"),
       mode: String(raw.mode || raw.type || "free"),
-      angle: Number(raw.angle || 0),
+      angle: Number.isFinite(angle) ? angle : fallbackAngle,
       orientationExplicit: Boolean(raw.orientationExplicit || raw.mode === "rotating"),
     };
   }
   const parsed = parseRestraints(restraints);
-  if (parsed.ux && parsed.uy && parsed.rz) return { type: "fixed", mode: "fixed", angle: 0 };
-  if (parsed.ux && parsed.uy) return { type: "pin", mode: "fixed-ground", angle: 0 };
-  if (parsed.uy) return { type: "roller", mode: "rolling-ground", angle: 0 };
+  if (parsed.ux && parsed.uy && parsed.rz) return { type: "fixed", mode: "fixed", angle: fallbackAngle };
+  if (parsed.ux && parsed.uy) return { type: "pin", mode: "fixed-ground", angle: fallbackAngle };
+  if (parsed.uy) return { type: "roller", mode: "rolling-ground", angle: fallbackAngle };
   return { type: "free", mode: "free", angle: 0 };
+}
+
+function supportAngleOf(node) {
+  const angle = Number(node && node.support ? node.support.angle : 0);
+  return Number.isFinite(angle) ? angle : 0;
 }
 
 function nextSequence(items, prefix) {
@@ -2225,42 +2233,42 @@ function openSupportDialog(node) {
   if (!node || !els.supportDialog) return;
   state.dialogNodeId = node.id;
   const support = node.support || supportFromRestraints(node.restraints);
-  const mode = support.mode === "rotating" ? "rotating" : "fixed";
-  const radio = document.querySelector(`input[name='supportMode'][value='${mode}']`);
+  const type = ["pin", "roller", "ground", "fixed"].includes(support.type) ? support.type : "fixed";
+  const radio = document.querySelector(`input[name='supportType'][value='${type}']`);
   if (radio) radio.checked = true;
-  els.supportAngle.value = Number(support.angle || 0);
+  els.supportAngle.value = supportAngleOf(node);
   if (!els.supportDialog.open) els.supportDialog.showModal();
 }
 
 function applySupportSettings() {
   const node = getNode(state.dialogNodeId);
   if (!node) return;
-  const mode = document.querySelector("input[name='supportMode']:checked").value;
-  const angle = Number(els.supportAngle.value || 0);
-  const current = node.support || supportFromRestraints(node.restraints);
-  const type = ["pin", "roller", "ground", "fixed"].includes(current.type) ? current.type : "pin";
-  const orientationExplicit = Boolean(
-    current.orientationExplicit ||
-    current.mode === "rotating" ||
-    mode === "rotating" ||
-    Math.abs(angle - Number(current.angle || 0)) > 1e-9
-  );
+  const checked = document.querySelector("input[name='supportType']:checked");
+  const type = checked ? checked.value : "fixed";
+  const rawAngle = Number(els.supportAngle.value);
+  const angle = Number.isFinite(rawAngle) ? normalizeSupportAngle(rawAngle) : 0;
   mutate(() => {
     if (type === "ground") {
       node.restraints = { ux: true, uy: true, rz: true };
-      node.support = { type: "ground", mode: "fixed-ground", angle, orientationExplicit };
+      node.support = { type: "ground", mode: "fixed-ground", angle, orientationExplicit: true };
     } else if (type === "fixed") {
       node.restraints = { ux: true, uy: true, rz: true };
-      node.support = { type: "fixed", mode: "fixed", angle, orientationExplicit };
+      node.support = { type: "fixed", mode: "fixed", angle, orientationExplicit: true };
     } else if (type === "roller") {
       node.restraints = supportPresetToRestraints("roller");
-      node.support = { type: "roller", mode: mode === "rotating" ? "rotating" : "rolling-ground", angle, orientationExplicit };
+      node.support = { type: "roller", mode: "rolling-ground", angle, orientationExplicit: true };
     } else {
       node.restraints = { ux: true, uy: true, rz: false };
-      node.support = { type: "pin", mode: mode === "rotating" ? "rotating" : "fixed-ground", angle, orientationExplicit };
+      node.support = { type: "pin", mode: "fixed-ground", angle, orientationExplicit: true };
     }
     setSelection("node", node.id);
   });
+}
+
+function normalizeSupportAngle(angle) {
+  let value = ((Number(angle) % 360) + 360) % 360;
+  if (value > 180) value -= 360;
+  return Number(value.toFixed(1));
 }
 
 function openNodeDialog(node) {
@@ -2360,11 +2368,18 @@ function formatResult(payload, project, scope) {
     const reactions = sortedEntries(payload.reactions || {});
     if (!reactions.length) lines.push("- 未形成支座反力。");
     for (const [nodeId, values] of reactions) {
-      lines.push(
-        `- ${nodeId}: Fx=${formatSigned((values.fx || 0) / 1000)} kN，Fy=${formatSigned((values.fy || 0) / 1000)} kN，Mz=${formatSigned(
-          (values.mz || 0) / 1000
-        )} kN·m`
-      );
+      let text = `- ${nodeId}: Fx=${formatSigned((values.fx || 0) / 1000)} kN，Fy=${formatSigned((values.fy || 0) / 1000)} kN，Mz=${formatSigned(
+        (values.mz || 0) / 1000
+      )} kN·m`;
+      const projectNode = (project.nodes || []).find((node) => node.id === nodeId);
+      const angle = Number(projectNode && projectNode.support_angle);
+      if (Number.isFinite(angle) && Math.abs(angle) > 1e-9) {
+        const radians = (angle * Math.PI) / 180;
+        const normal = -Math.sin(radians) * (values.fx || 0) + Math.cos(radians) * (values.fy || 0);
+        const tangent = Math.cos(radians) * (values.fx || 0) + Math.sin(radians) * (values.fy || 0);
+        text += `；支座转角 ${formatNumber(angle, 1)}°，法向反力 R⊥=${formatSigned(normal / 1000)} kN，沿地面 R∥=${formatSigned(tangent / 1000)} kN`;
+      }
+      lines.push(text);
     }
     lines.push("");
   }
@@ -4475,26 +4490,11 @@ function supportFromRestraints(restraints) {
 }
 
 function supportDirection(node) {
-  const support = node.support || {};
-  if ((support.mode === "rotating" || support.orientationExplicit) && Number.isFinite(Number(support.angle)) && support.type !== "free") {
-    const radians = Number(support.angle) * (Math.PI / 180);
-    return { x: Math.cos(radians), y: -Math.sin(radians) };
-  }
-  return connectedDirection(node);
-}
-
-function connectedDirection(node) {
-  for (const element of state.elements) {
-    if (element.node_i === node.id || element.node_j === node.id) {
-      const other = getNode(element.node_i === node.id ? element.node_j : element.node_i);
-      if (!other) continue;
-      const dx = other.x - node.x;
-      const dy = other.y - node.y;
-      const length = Math.hypot(dx, dy) || 1;
-      return { x: dx / length, y: -dy / length };
-    }
-  }
-  return { x: 0, y: -1 };
+  // Unit vector (screen space) pointing from the ground towards the node.
+  // Angle 0 puts the ground below the node; positive angles rotate the
+  // support counter-clockwise, matching the solver's support_angle.
+  const radians = supportAngleOf(node) * (Math.PI / 180);
+  return { x: -Math.sin(radians), y: -Math.cos(radians) };
 }
 
 function drawFixedSupport(point, dir) {
@@ -5086,8 +5086,10 @@ function drawText(text, x, y, color) {
   ctx.restore();
 }
 
-function isRotatableSupport(node) {
-  return node && node.support && ["pin", "roller"].includes(node.support.type) && node.support.mode === "rotating";
+function isRotatableSupport(node, event = null) {
+  if (!isSupportNode(node)) return false;
+  if (event && event.altKey) return true;
+  return Boolean(node.support && node.support.mode === "rotating");
 }
 
 function isSupportNode(node) {
@@ -5095,11 +5097,13 @@ function isSupportNode(node) {
 }
 
 function angleFromSupportDrag(node, point) {
+  // The ground faces the pointer: pointer straight below the node is angle 0,
+  // pointer to the right is +90° (counter-clockwise from "ground below").
   const center = worldToScreen(node);
   const dx = point.x - center.x;
   const dy = point.y - center.y;
-  if (Math.hypot(dx, dy) < 1) return Number(node.support?.angle || 0);
-  return Number((Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1));
+  if (Math.hypot(dx, dy) < 1) return supportAngleOf(node);
+  return normalizeSupportAngle((Math.atan2(dx, dy) * 180) / Math.PI);
 }
 
 function pushUndoForInteraction(interaction) {
@@ -5121,7 +5125,7 @@ canvas.addEventListener("mousedown", (event) => {
   }
   const hitNode = nodeOrSupportAtScreen(point.x, point.y);
   const hitElement = elementAtScreen(point.x, point.y);
-  if (state.tool === "select" && isRotatableSupport(hitNode)) {
+  if (state.tool === "select" && isRotatableSupport(hitNode, event)) {
     state.rotateSupport = {
       nodeId: hitNode.id,
       start: point,

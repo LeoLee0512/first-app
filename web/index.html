@@ -942,19 +942,21 @@
     <dialog id="supportDialog" class="modal">
       <form method="dialog">
         <header class="modal-header">
-          <h2>支座显示与接地设置</h2>
+          <h2>支座类型与方向</h2>
           <button value="cancel" class="icon-button" title="关闭">×</button>
         </header>
         <div class="segmented">
-          <label><input type="radio" name="supportMode" value="fixed" checked>固定接地（全局约束）</label>
-          <label><input type="radio" name="supportMode" value="rotating">旋转图形（仅显示）</label>
+          <label><input type="radio" name="supportType" value="fixed" checked>固定端</label>
+          <label><input type="radio" name="supportType" value="pin">铰支座</label>
+          <label><input type="radio" name="supportType" value="roller">滚动支座</label>
+          <label><input type="radio" name="supportType" value="ground">地基</label>
         </div>
         <label class="wide-field">
-          <span>支座图形角度（仅显示）</span>
+          <span>支座角度（度，逆时针为正，0 表示地面在节点下方）</span>
           <input id="supportAngle" type="number" step="1" value="0">
         </label>
         <p class="capability-note">
-          当前旋转只改变支座图形，不改变全局 ux/uy/rz 约束；斜向滚动约束求解仍在开发中。
+          角度参与求解：滚动支座只约束垂直于地面（法向）的位移，沿地面可自由滑动；铰支座和固定端的约束不随角度改变。倾斜支座的反力同时给出全局 Fx、Fy 分量和法向合力。也可在选择工具下按住 Alt 拖动支座图形旋转。
         </p>
         <footer class="modal-actions">
           <button id="solidifySupportNodeButton" type="button">固化节点</button>

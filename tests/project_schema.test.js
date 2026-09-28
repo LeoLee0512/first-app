@@ -246,6 +246,15 @@ check(() => {
 
 check(() => {
   const project = staticProject();
+  project.nodes[1].support_angle = 30;
+  const loaded = adapter.loadStaticProject(project);
+  assert.equal(loaded.nodes[1].support_angle, 30);
+  project.nodes[1].support_angle = "steep";
+  assert.throws(() => adapter.loadStaticProject(project), /support_angle/);
+});
+
+check(() => {
+  const project = staticProject();
   project.elements[0].type = "truss";
   project.loads.elements = [{ element: "E1", kind: "uniform_moment_local", mz: "1 kN*m/m" }];
   assert.throws(() => adapter.loadStaticProject(project), /桁架单元 E1.*uniform_moment_local/);
