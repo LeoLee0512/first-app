@@ -100,7 +100,7 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
         "求解结果",
         f"求解范围：{scope}",
         f"求解内容：{labels}",
-        f"体系判断：{_system_judgement(project)}",
+        f"体系判断：{_system_judgement(project, result)}",
         "",
         "模型概况",
         f"- 节点数：{len(project.nodes)}",
@@ -649,7 +649,20 @@ def _append_stress_strain(
     lines.append("")
 
 
-def _system_judgement(project: Project) -> str:
+def _system_judgement(project: Project, result: AnalysisResult | None = None) -> str:
+    system = (result.summary if result is not None else {}).get("system")
+    if isinstance(system, dict) and "degrees_of_freedom" in system:
+        freedom = int(system["degrees_of_freedom"])
+        count = (
+            f"W = 3×{system.get('joints', 0)} − 3×{system.get('members', 0)}"
+            f" + {system.get('hinged_connections', 0)} − {system.get('restraints', 0)}"
+            f" − {system.get('pin_joints', 0)} = {freedom}"
+        )
+        if system.get("classification") == "unstable":
+            return f"几何可变体系（常变），{count}"
+        if system.get("classification") == "determinate":
+            return f"几何不变、静定结构（刚度矩阵满秩），{count}"
+        return f"几何不变、{int(system.get('indeterminacy', 0))} 次超静定结构（刚度矩阵满秩），{count}"
     restrained = sum(sum(node.restraints) for node in project.nodes)
     if not project.nodes or not project.elements:
         return "未形成结构"

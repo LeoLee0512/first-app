@@ -84,18 +84,23 @@ class Frame2DSolver:
         free = _active_free_dofs(rotated_stiffness, rotated_loads, free)
         restrained_array = np.array(restrained, dtype=int)
 
+        system = classify_system(project)
+
         if free.size == 0:
             raise SolverError("Model has no free degrees of freedom.")
 
         k_ff = rotated_stiffness[np.ix_(free, free)]
         p_f = rotated_loads[free]
+        # A rank-deficient K_ff means a rigid-body mechanism survives the
+        # restraints: either too few of them (W > 0) or an improper layout
+        # (parallel / concurrent reactions) that the count cannot detect.
+        if np.linalg.matrix_rank(k_ff) < k_ff.shape[0]:
+            raise SolverError(unstable_system_message(system))
         rotated_displacements = np.zeros(total_dofs, dtype=float)
         try:
             rotated_displacements[free] = np.linalg.solve(k_ff, p_f)
         except np.linalg.LinAlgError as exc:
-            raise SolverError(
-                "Stiffness matrix is singular. Check restraints, disconnected geometry, or mechanisms."
-            ) from exc
+            raise SolverError(unstable_system_message(system)) from exc
 
         displacements = support_rotation.T @ rotated_displacements
         # Reactions are evaluated in global axes; an inclined support therefore
@@ -112,6 +117,7 @@ class Frame2DSolver:
         )
         element_diagrams = _map_element_diagrams(project, element_end_forces, load_integrals)
         summary = _build_summary(project, displacement_map, reaction_map, element_end_forces, element_diagrams)
+        summary["system"] = system
 
         return AnalysisResult(
             displacements=displacement_map,
@@ -458,6 +464,90 @@ def _element_indexes(element: Element, dof_index: dict[tuple[str, str], int]) ->
         dof_index[(element.node_j, "uy")],
         dof_index[(element.node_j, "rz")],
     ]
+
+
+def classify_system(project: Project) -> dict[str, object]:
+    """Kinematic degree-of-freedom count W of the plane structure.
+
+    Every member is a rigid body (3 DOFs) and every joint is a rigid body
+    (3 DOFs). A rigid member-joint connection removes 3 DOFs, a hinged one
+    (moment release, or either end of a truss bar) removes 2, so each hinged
+    connection leaves one extra DOF. A joint whose connections are all hinged
+    is a pin joint: its own rotation is not a physical DOF, so it is removed
+    and an rz restraint at such a joint is not counted. Support restraints
+    remove one DOF each::
+
+        W = 3N - 3m + h - r - N_pin
+
+    For rigid-jointed frames this is the textbook W = 3N - 3m - r. W > 0 is
+    a mechanism; W <= 0 is only a necessary condition for stability, the
+    sufficient check is the rank of the stiffness matrix.
+    """
+
+    hinged_connections = 0
+    hinged_at_node: dict[str, int] = {node.id: 0 for node in project.nodes}
+    connections_at_node: dict[str, int] = {node.id: 0 for node in project.nodes}
+    for element in project.elements:
+        connections_at_node[element.node_i] += 1
+        connections_at_node[element.node_j] += 1
+        if element.type == "truss":
+            hinged_connections += 2
+            hinged_at_node[element.node_i] += 1
+            hinged_at_node[element.node_j] += 1
+            continue
+        if element.moment_release_i:
+            hinged_connections += 1
+            hinged_at_node[element.node_i] += 1
+        if element.moment_release_j:
+            hinged_connections += 1
+            hinged_at_node[element.node_j] += 1
+
+    pin_joints = [
+        node.id
+        for node in project.nodes
+        if connections_at_node[node.id] > 0 and hinged_at_node[node.id] == connections_at_node[node.id]
+    ]
+    pin_joint_set = set(pin_joints)
+    restraints = 0
+    for node in project.nodes:
+        restraints += int(node.restraints[0]) + int(node.restraints[1])
+        if node.restraints[2] and node.id not in pin_joint_set:
+            restraints += 1
+
+    joints = len(project.nodes)
+    members = len(project.elements)
+    freedom = 3 * joints - 3 * members + hinged_connections - restraints - len(pin_joints)
+    if freedom > 0:
+        classification = "unstable"
+    elif freedom == 0:
+        classification = "determinate"
+    else:
+        classification = "indeterminate"
+    return {
+        "degrees_of_freedom": int(freedom),
+        "indeterminacy": int(max(0, -freedom)),
+        "joints": int(joints),
+        "members": int(members),
+        "restraints": int(restraints),
+        "hinged_connections": int(hinged_connections),
+        "pin_joints": int(len(pin_joints)),
+        "classification": classification,
+    }
+
+
+def unstable_system_message(system: dict[str, object]) -> str:
+    freedom = int(system["degrees_of_freedom"])
+    if freedom > 0:
+        return (
+            f"体系判断：几何可变体系（常变），计算自由度 W = {freedom} > 0，刚度矩阵奇异，无法求解。"
+            "请补充支座或杆件约束。"
+            f" [Structure is geometrically unstable: W = {freedom} > 0.]"
+        )
+    return (
+        f"体系判断：约束数量满足 W = {freedom} ≤ 0，但约束布置不当（反力平行或汇交、局部机构），"
+        "刚度矩阵奇异，属于瞬变或几何可变体系，无法求解。请检查支座方向、铰的位置和杆件连通性。"
+        f" [Structure is geometrically unstable: W = {freedom} <= 0 but the restraints are improperly arranged.]"
+    )
 
 
 def _is_inclined(node: Node) -> bool:

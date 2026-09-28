@@ -2315,7 +2315,7 @@ async function solveProject(scope = "whole") {
       body: JSON.stringify(project),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "求解失败。");
+    if (!response.ok) throw new Error(translateSolverError(payload.error || "求解失败。"));
     state.result = payload;
     state.lastProject = project;
     state.lastScope = scope;
@@ -2347,7 +2347,7 @@ function formatResult(payload, project, scope) {
     "求解结果",
     `求解范围：${scope === "selection" ? "选中隔离体" : "整体模型"}`,
     `求解内容：${optionLabels.join("、") || "未指定"}`,
-    `体系判断：${simpleSystemJudgement(project)}`,
+    `体系判断：${systemJudgementText(payload)}`,
     "",
   ];
 
@@ -2593,12 +2593,32 @@ function projectElasticModulus(project) {
   return Math.max(quantityToNumber(material.E || els.materialE.value, "Pa"), 1);
 }
 
-function simpleSystemJudgement(project) {
-  const restraints = project.nodes.reduce((sum, node) => sum + (node.restraints || []).length, 0);
-  if (project.nodes.length === 0 || project.elements.length === 0) return "未形成结构";
-  if (restraints < 3) return "常变或瞬变风险：约束自由度少于 3";
-  if (restraints === 3) return "外部静定近似，不变体系需结合几何继续判断";
-  return `外部超静定近似，冗余约束约 ${restraints - 3}`;
+function systemJudgementText(payload) {
+  const system = payload && payload.summary && payload.summary.system;
+  if (!system || !Number.isFinite(Number(system.degrees_of_freedom))) return "后端未提供体系判断";
+  const W = Number(system.degrees_of_freedom);
+  const hinges = Number(system.hinged_connections || 0);
+  const pins = Number(system.pin_joints || 0);
+  let count = `W = 3×${system.joints} − 3×${system.members}`;
+  if (hinges) count += ` + ${hinges}（铰接端）`;
+  count += ` − ${system.restraints}（约束）`;
+  if (pins) count += ` − ${pins}（全铰节点）`;
+  count += ` = ${W}`;
+  if (system.classification === "unstable") return `几何可变体系（常变），${count}`;
+  if (system.classification === "determinate") return `几何不变、静定结构（刚度矩阵满秩），${count}`;
+  return `几何不变、${system.indeterminacy} 次超静定结构（刚度矩阵满秩），${count}`;
+}
+
+function translateSolverError(message) {
+  const text = String(message || "");
+  if (/At least three restrained DOFs/i.test(text)) return "体系判断：约束自由度少于 3，属于几何可变体系，无法求解。请补充支座。";
+  if (/Isolated nodes are not allowed/i.test(text)) return `存在未连接杆件的孤立节点，无法求解：${text.split(":").pop().trim()}`;
+  if (/at least one element/i.test(text)) return "模型中还没有杆件。";
+  if (/at least one node/i.test(text)) return "模型中还没有节点。";
+  if (/Model has no free degrees of freedom/i.test(text)) return "模型没有自由度（所有节点都被完全约束），无需求解。";
+  if (/Unsupported element type/i.test(text)) return `后端不支持该杆件类型，请在前端离散为直杆后求解：${text}`;
+  if (/geometrically unstable/i.test(text)) return text.replace(/\s*\[Structure is geometrically unstable[^\]]*\]\s*$/, "");
+  return text;
 }
 
 async function downloadReport() {
