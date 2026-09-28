@@ -2412,6 +2412,7 @@ function formatResult(payload, project, scope) {
   lines.push("3. 把集中荷载、分布荷载换算成等效节点荷载，组装总体方程 [K]{u}={P}。");
   lines.push("4. 按支座约束消去受限自由度，求得节点位移 ux、uy 和转角 θ。");
   lines.push("5. 由 {R}=[K]{u}-{P} 得到支座反力，由杆端位移反算 Ni、Vi、Mi、Nj、Vj、Mj，并沿杆长插值得到 N/V/M 图。");
+  lines.push("   内力图符号约定：轴力 N 以拉为正、压为负；弯矩 M 以杆件下侧（局部 -y 侧）受拉为正；剪力 V 取截面左侧横向力之和。");
   if (state.solveOptions.includes("stress") || state.solveOptions.includes("strain") || state.solveOptions.includes("stress_strain")) {
     lines.push("6. 应力按 σ=N/A+M·c/I 估算，应变按 ε=σ/E 计算；当前 c 取等效截面高度 sqrt(A)/2。");
   }

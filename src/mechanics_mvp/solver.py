@@ -499,7 +499,12 @@ def _map_element_diagrams(
         rows: list[dict[str, float]] = []
         for position in np.linspace(0.0, length, 21):
             q_integral = _interpolated_integrals(integrals, position) if integrals else {}
-            axial = forces["n_i"] - float(q_integral.get("axial", 0.0))
+            # Sign conventions along the local x axis of the element:
+            # axial N is tension-positive, shear V is the resultant of the
+            # transverse forces to the left of the section, and bending moment
+            # M is positive when the lower fibre (local -y side) is in tension.
+            # Equilibrium of the segment [0, x]: n_i + ∫qx + Σfx + N = 0.
+            axial = -forces["n_i"] - float(q_integral.get("axial", 0.0))
             shear = forces["v_i"] + float(q_integral.get("shear", 0.0))
             moment = -forces["m_i"] + forces["v_i"] * position + float(q_integral.get("moment", 0.0))
             rows.append(
@@ -526,6 +531,9 @@ def _interpolated_integrals(integrals: dict[str, object], position: float) -> di
         event_x = float(event["x"])
         if position + 1e-12 < event_x:
             continue
+        # A concentrated local +x force to the left of the section enters the
+        # axial resultant exactly like the distributed qx integral; the
+        # tension-positive sign is applied once in `_map_element_diagrams`.
         result["axial"] += float(event["fx"])
         result["shear"] += float(event["fy"])
         result["moment"] += float(event["fy"]) * (position - event_x) - float(event["mz"])
