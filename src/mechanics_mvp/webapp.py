@@ -49,9 +49,21 @@ APPLICATION_VERSION = os.environ.get("MECHANICS_VERSION", __version__)
 STATIC_PROJECT_SCHEMA = "cms-static-project@1"
 DYNAMICS_PROJECT_SCHEMA = "cms-dynamics-project@2"
 STARTED_AT = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+# Largest accepted body for /api/solve, /api/report and /api/dynamics-report.
+# Report requests carry two JPEG canvas snapshots as data URLs, which stay far
+# below this; anything larger is rejected before the body is read.
+SOLVER_BODY_LIMIT = 16 * 1024 * 1024
 MANUAL_FILENAME = "computational-mechanics-solver-v1.3.2-manual.pdf"
 MANUAL_DOWNLOAD_PATH = f"/downloads/{MANUAL_FILENAME}"
 MANUAL_FILE = WEB_ROOT / "downloads" / MANUAL_FILENAME
+
+
+class RequestBodyError(ValueError):
+    """A request body could not be read; `status` is the HTTP status to reply with."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _git_short_commit() -> str:
@@ -213,9 +225,20 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw_body = self.rfile.read(length)
+            raw_body = self._read_raw_body(SOLVER_BODY_LIMIT)
+        except RequestBodyError as error:
+            self._send_json({"error": str(error)}, status=error.status)
+            return
+        try:
             payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json({"error": "请求内容不是有效的 JSON。"}, status=422)
+            return
+        if not isinstance(payload, dict):
+            self._send_json({"error": "请求内容必须为 JSON 对象。"}, status=422)
+            return
+
+        try:
             if request_path in {"/api/report", "/api/dynamics-report"}:
                 required_entitlement = self._report_entitlement(payload)
                 if required_entitlement:
@@ -472,19 +495,36 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
         return payload
 
     def _read_body(self, limit: int) -> bytes:
+        """Read a bounded body for the account endpoints (errors map to 422)."""
+
+        try:
+            return self._read_raw_body(limit)
+        except RequestBodyError as error:
+            raise AuthValidationError(str(error)) from None
+
+    def _read_raw_body(self, limit: int) -> bytes:
+        """Read at most `limit` bytes of request body.
+
+        Raises RequestBodyError with status 400 for a chunked or malformed
+        request and 413 when Content-Length exceeds the limit; the body is not
+        read in either case.
+        """
+
         transfer_encoding = str(self.headers.get("Transfer-Encoding", "")).strip().lower()
         if transfer_encoding and transfer_encoding != "identity":
-            raise AuthValidationError("不支持分块上传。")
+            raise RequestBodyError("不支持分块上传。", 400)
         raw_length = str(self.headers.get("Content-Length", "0")).strip()
         try:
             length = int(raw_length)
         except ValueError:
-            raise AuthValidationError("请求长度无效。") from None
-        if length < 0 or length > limit:
-            raise AuthValidationError("请求内容过大。")
+            raise RequestBodyError("请求长度无效。", 400) from None
+        if length < 0:
+            raise RequestBodyError("请求长度无效。", 400)
+        if length > limit:
+            raise RequestBodyError(f"请求内容过大：超过 {limit} 字节上限。", 413)
         body = self.rfile.read(length)
         if len(body) != length:
-            raise AuthValidationError("请求内容不完整。")
+            raise RequestBodyError("请求内容不完整。", 400)
         return body
 
     def _send_issued_session(self, issued: IssuedSession, *, status: int = 200) -> None:
