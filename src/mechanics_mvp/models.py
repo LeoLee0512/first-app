@@ -15,6 +15,10 @@ class Node:
     x: float
     y: float
     restraints: tuple[bool, bool, bool] = (False, False, False)
+    # Orientation of the support in degrees, counter-clockwise positive.
+    # 0 means the ground lies below the node (support local y' = global y);
+    # `restraints` ux/uy are applied along the rotated support axes x'/y'.
+    support_angle: float = 0.0
 
 
 @dataclass(frozen=True)

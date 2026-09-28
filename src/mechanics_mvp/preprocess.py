@@ -12,8 +12,14 @@ class ValidationError(ValueError):
     """Raised when a project is not valid for solving."""
 
 
-SUPPORTED_ELEMENT_TYPES = {"frame", "rigid", "arc", "tee", "truss"}
-SUPPORTED_ELEMENT_LOADS = {"uniform_local", "linear_local", "polynomial_local", "point_global"}
+SUPPORTED_ELEMENT_TYPES = {"frame", "rigid", "truss"}
+SUPPORTED_ELEMENT_LOADS = {
+    "uniform_local",
+    "linear_local",
+    "polynomial_local",
+    "point_global",
+    "uniform_moment_local",
+}
 
 
 def validate_project(project: Project) -> None:
@@ -45,7 +51,11 @@ def validate_project(project: Project) -> None:
         if element.section not in sections:
             raise ValidationError(f"Element {element.id} references missing section {element.section}.")
         if element.type not in SUPPORTED_ELEMENT_TYPES:
-            raise ValidationError(f"Unsupported element type: {element.type!r}.")
+            raise ValidationError(
+                f"Unsupported element type: {element.type!r}. The solver only handles straight "
+                "'frame', 'rigid' and 'truss' elements; curved or bent members (arc, tee, right_angle, "
+                "freeform) must be discretised into straight segments before solving."
+            )
         if element.moment_release_i and element.moment_release_j:
             raise ValidationError(
                 f"Element {element.id} has moment releases at both ends. "
@@ -55,6 +65,10 @@ def validate_project(project: Project) -> None:
             raise ValidationError(f"Element {element.id} is not a frame and cannot carry moment-release flags.")
         connected[element.node_i] += 1
         connected[element.node_j] += 1
+
+    for node in project.nodes:
+        if not math.isfinite(node.support_angle):
+            raise ValidationError(f"Node {node.id} has a non-finite support_angle.")
 
     isolated = [node.id for node in project.nodes if connected[node.id] == 0]
     if isolated:

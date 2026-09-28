@@ -238,8 +238,32 @@ check(() => {
 
 check(() => {
   const project = staticProject();
-  project.loads.elements = [{ element: "E1", kind: "uniform_moment_local", mz: "1 kN*m\/m" }];
-  assert.throws(() => adapter.loadStaticProject(project), /E1.*uniform_moment_local/);
+  project.loads.elements = [{ element: "E1", kind: "uniform_moment_local", mz: "1 kN*m/m" }];
+  const loaded = adapter.loadStaticProject(project);
+  assert.equal(loaded.loads.elements[0].kind, "uniform_moment_local");
+  assert.equal(loaded.loads.elements[0].mz, "1 kN*m/m");
+});
+
+check(() => {
+  const project = staticProject();
+  project.nodes[1].support_angle = 30;
+  const loaded = adapter.loadStaticProject(project);
+  assert.equal(loaded.nodes[1].support_angle, 30);
+  project.nodes[1].support_angle = "steep";
+  assert.throws(() => adapter.loadStaticProject(project), /support_angle/);
+});
+
+check(() => {
+  const project = staticProject();
+  project.elements[0].type = "truss";
+  project.loads.elements = [{ element: "E1", kind: "uniform_moment_local", mz: "1 kN*m/m" }];
+  assert.throws(() => adapter.loadStaticProject(project), /桁架单元 E1.*uniform_moment_local/);
+});
+
+check(() => {
+  const project = staticProject();
+  project.loads.elements = [{ element: "E1", kind: "uniform_moment_local", mz: "1 banana" }];
+  assert.throws(() => adapter.loadStaticProject(project), /均布力偶的 mz/);
 });
 
 check(() => {

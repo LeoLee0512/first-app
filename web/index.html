@@ -855,8 +855,13 @@
         </section>
 
         <section id="distributedMomentPanel" class="modal-section hidden">
-          <p>均布力偶的一致荷载向量仍在开发中，当前版本暂不允许施加。</p>
-          <input id="distributedMoment" type="hidden" value="0 N*m/m">
+          <label class="wide-field">
+            <span>均布力偶强度 m（逆时针为正，单位 N·m/m 或 kN·m/m）</span>
+            <input id="distributedMoment" value="3 kN*m/m">
+          </label>
+          <p class="capability-note">
+            等效节点荷载取 [0, −m, 0, 0, +m, 0]（由 ∫m·H′ᵢ dx 得到），弯矩图叠加 −m·x。悬臂梁自由端转角为 mL²/(2EI)。
+          </p>
         </section>
 
         <footer class="modal-actions">
@@ -937,19 +942,21 @@
     <dialog id="supportDialog" class="modal">
       <form method="dialog">
         <header class="modal-header">
-          <h2>支座显示与接地设置</h2>
+          <h2>支座类型与方向</h2>
           <button value="cancel" class="icon-button" title="关闭">×</button>
         </header>
         <div class="segmented">
-          <label><input type="radio" name="supportMode" value="fixed" checked>固定接地（全局约束）</label>
-          <label><input type="radio" name="supportMode" value="rotating">旋转图形（仅显示）</label>
+          <label><input type="radio" name="supportType" value="fixed" checked>固定端</label>
+          <label><input type="radio" name="supportType" value="pin">铰支座</label>
+          <label><input type="radio" name="supportType" value="roller">滚动支座</label>
+          <label><input type="radio" name="supportType" value="ground">地基</label>
         </div>
         <label class="wide-field">
-          <span>支座图形角度（仅显示）</span>
+          <span>支座角度（度，逆时针为正，0 表示地面在节点下方）</span>
           <input id="supportAngle" type="number" step="1" value="0">
         </label>
         <p class="capability-note">
-          当前旋转只改变支座图形，不改变全局 ux/uy/rz 约束；斜向滚动约束求解仍在开发中。
+          角度参与求解：滚动支座只约束垂直于地面（法向）的位移，沿地面可自由滑动；铰支座和固定端的约束不随角度改变。倾斜支座的反力同时给出全局 Fx、Fy 分量和法向合力。也可在选择工具下按住 Alt 拖动支座图形旋转。
         </p>
         <footer class="modal-actions">
           <button id="solidifySupportNodeButton" type="button">固化节点</button>
@@ -1089,7 +1096,7 @@
         </header>
         <div class="scope-row">
           <label><input type="radio" name="solveScope" value="whole" checked>整体模型</label>
-          <label><input type="radio" name="solveScope" value="selection">选中隔离体</label>
+          <label><input type="radio" name="solveScope" value="selection">选中隔离体（整体求解后只显示所选杆件及切口内力）</label>
         </div>
         <div class="solve-grid">
           <label><input type="checkbox" name="solveOption" value="determinacy" checked>静定 / 超静定分析</label>
@@ -1116,6 +1123,7 @@
     <script src="/static/units.js"></script>
     <script src="/static/project-schema.js"></script>
     <script src="/static/project-adapter.js"></script>
+    <script src="/static/geometry-discretize.js"></script>
     <script src="/static/dynamics-field-geometry.js"></script>
     <script src="/static/dynamics-field-placement.js"></script>
     <script src="/static/dynamics-expression.js"></script>

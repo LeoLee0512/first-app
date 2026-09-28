@@ -265,6 +265,8 @@ const state = {
   currentUser: null,
   entitlements: null,
   result: null,
+  expansion: {},
+  scopeElements: null,
   lastProject: null,
   lastScope: "whole",
   projectMetadata: { name: "canvas_project" },
@@ -1285,6 +1287,10 @@ function elementAtScreen(x, y) {
 }
 
 function elementDistanceAtScreen(element, point, a, b) {
+  if (elementGeometryOf(element) === "right_angle") {
+    const elbow = { x: b.x, y: a.y };
+    return Math.min(pointToSegmentDistance(point, a, elbow), pointToSegmentDistance(point, elbow, b));
+  }
   if (elementGeometryOf(element) !== "arc" && elementGeometryOf(element) !== "freeform") return pointToSegmentDistance(point, a, b);
   if (elementGeometryOf(element) === "freeform" && Array.isArray(element.path) && element.path.length > 1) {
     const points = element.path.map((item) => worldToScreen(item));
@@ -1623,7 +1629,11 @@ function deleteSelection() {
 function buildProject(options = {}) {
   const scope = options.scope || "whole";
   const model = scopedModel(scope);
-  return {
+  // Arc / right-angle / free-form members are split into straight segments
+  // for the solver; `expansion` maps each parent member to its segments and
+  // travels with the project object without being serialised.
+  const expanded = GeometryDiscretize.expandModel(model);
+  const project = {
     schema: ProjectAdapter.STATIC_SCHEMA,
     application: ProjectAdapter.APPLICATION_ID,
     module: "statics",
@@ -1634,15 +1644,17 @@ function buildProject(options = {}) {
     solver: els.solverBackend.value,
     materials: [{ id: "steel", E: els.materialE.value, nu: 0.3 }],
     sections: [{ id: "default", A: els.sectionA.value, I: els.sectionI.value }],
-    nodes: model.nodes.map((node) => ({
+    nodes: expanded.nodes.map((node) => ({
       id: node.id,
       x: `${node.x} m`,
       y: `${node.y} m`,
       restraints: restraintsToList(node.restraints),
       support: node.support || { type: "free", angle: 0, mode: "free" },
+      support_angle: supportAngleOf(node),
       fused: Boolean(node.fused),
+      ...(node.parent ? { parent: node.parent } : {}),
     })),
-    elements: model.elements.map((element) => ({
+    elements: expanded.elements.map((element) => ({
       id: element.id,
       node_i: element.node_i,
       node_j: element.node_j,
@@ -1654,34 +1666,29 @@ function buildProject(options = {}) {
       arcAngle: Number(element.arcAngle || 45),
       teeDepth: element.teeDepth || "0.35 m",
       sectionParams: element.sectionParams || {},
+      ...(element.parent && element.parent !== element.id ? { parent: element.parent } : {}),
     })),
     loads: {
       nodes: projectNodalLoads(model),
-      elements: projectElementLoads(model),
+      elements: expanded.elementLoads,
     },
   };
+  Object.defineProperty(project, "expansion", { value: expanded.expansion, enumerable: false });
+  Object.defineProperty(project, "scopeElements", { value: model.scopeElements, enumerable: false });
+  return project;
+}
+
+function discretisationLines(expansion) {
+  const lines = [];
+  for (const [parent, info] of Object.entries(expansion || {})) {
+    if (!info) continue;
+    lines.push(`- ${parent}：${geometryLabel(info.geometry)}，沿绘制路径离散为 ${info.segments.length} 段直杆（总弧长 ${formatNumber(info.length)} m），结果已按母杆件合并。`);
+  }
+  return lines;
 }
 
 function solverElementType(element) {
   return ProjectAdapter.solverElementType(element);
-}
-
-function projectElementLoads(model) {
-  if (model.elementLoads.some((load) => load.kind === "uniform_moment_local")) {
-    throw new Error("均布力偶的一致荷载向量仍在开发中，请先删除该荷载后求解。");
-  }
-  const distributedLoads = model.elementLoads.map((load) => ({ ...load }));
-  const pointLoads = model.loads
-    .filter((load) => load.kind === "element_point" && load.element)
-    .map((load) => ({
-      element: load.element,
-      kind: "point_global",
-      ratio: Math.max(0, Math.min(1, Number(load.ratio ?? 0.5))),
-      fx: load.fx || "0 N",
-      fy: load.fy || "0 N",
-      mz: load.mz || "0 N*m",
-    }));
-  return [...distributedLoads, ...pointLoads];
 }
 
 function projectNodalLoads(model) {
@@ -1696,14 +1703,24 @@ function projectNodalLoads(model) {
 }
 
 function scopedModel(scope) {
-  if (scope !== "selection") {
-    return {
-      nodes: state.nodes,
-      elements: state.elements,
-      loads: state.loads,
-      elementLoads: state.elementLoads,
-    };
-  }
+  // The whole structure is always solved: cutting the selection out would
+  // usually leave it under-restrained. "选中隔离体" only filters the result
+  // view to the selected members, whose end forces are the cut forces.
+  const model = {
+    nodes: state.nodes,
+    elements: state.elements,
+    loads: state.loads,
+    elementLoads: state.elementLoads,
+    scopeElements: null,
+  };
+  if (scope !== "selection") return model;
+  const elementIds = selectionElementIds();
+  if (!elementIds.size) throw new Error("选中隔离体至少需要包含一根杆件。");
+  model.scopeElements = elementIds;
+  return model;
+}
+
+function selectionElementIds() {
   const elementIds = new Set(state.selection.elements);
   const nodeIds = new Set(state.selection.nodes);
   if (state.selected) {
@@ -1713,21 +1730,22 @@ function scopedModel(scope) {
   for (const element of state.elements) {
     if (nodeIds.has(element.node_i) && nodeIds.has(element.node_j)) elementIds.add(element.id);
   }
+  return elementIds;
+}
+
+function scopeNodeIds(scopeElements) {
+  const nodeIds = new Set();
   for (const element of state.elements) {
-    if (elementIds.has(element.id)) {
+    if (scopeElements.has(element.id)) {
       nodeIds.add(element.node_i);
       nodeIds.add(element.node_j);
     }
   }
-  const nodes = state.nodes.filter((node) => nodeIds.has(node.id));
-  const elements = state.elements.filter((element) => elementIds.has(element.id));
-  if (!elements.length) throw new Error("选中隔离体至少需要包含一根杆件。");
-  return {
-    nodes,
-    elements,
-    loads: state.loads.filter((load) => (load.node ? nodeIds.has(load.node) : elementIds.has(load.element))),
-    elementLoads: state.elementLoads.filter((load) => elementIds.has(load.element)),
-  };
+  return nodeIds;
+}
+
+function inScope(elementId) {
+  return !state.scopeElements || state.scopeElements.has(elementId);
 }
 
 function importProject(rawProject) {
@@ -1737,7 +1755,7 @@ function importProject(rawProject) {
     x: quantityToNumber(node.x ?? 0, "m"),
     y: quantityToNumber(node.y ?? 0, "m"),
     restraints: parseRestraints(node.restraints),
-    support: parseSupport(node.support, node.restraints),
+    support: parseSupport(node.support, node.restraints, node.support_angle),
     fused: Boolean(node.fused),
   }));
   const nextElements = project.elements.map((element, index) => ({
@@ -1827,20 +1845,27 @@ function importProject(rawProject) {
   draw();
 }
 
-function parseSupport(raw, restraints) {
+function parseSupport(raw, restraints, supportAngle) {
+  const fallbackAngle = Number.isFinite(Number(supportAngle)) ? Number(supportAngle) : 0;
   if (raw && typeof raw === "object") {
+    const angle = Number(raw.angle);
     return {
       type: String(raw.type || "free"),
       mode: String(raw.mode || raw.type || "free"),
-      angle: Number(raw.angle || 0),
+      angle: Number.isFinite(angle) ? angle : fallbackAngle,
       orientationExplicit: Boolean(raw.orientationExplicit || raw.mode === "rotating"),
     };
   }
   const parsed = parseRestraints(restraints);
-  if (parsed.ux && parsed.uy && parsed.rz) return { type: "fixed", mode: "fixed", angle: 0 };
-  if (parsed.ux && parsed.uy) return { type: "pin", mode: "fixed-ground", angle: 0 };
-  if (parsed.uy) return { type: "roller", mode: "rolling-ground", angle: 0 };
+  if (parsed.ux && parsed.uy && parsed.rz) return { type: "fixed", mode: "fixed", angle: fallbackAngle };
+  if (parsed.ux && parsed.uy) return { type: "pin", mode: "fixed-ground", angle: fallbackAngle };
+  if (parsed.uy) return { type: "roller", mode: "rolling-ground", angle: fallbackAngle };
   return { type: "free", mode: "free", angle: 0 };
+}
+
+function supportAngleOf(node) {
+  const angle = Number(node && node.support ? node.support.angle : 0);
+  return Number.isFinite(angle) ? angle : 0;
 }
 
 function nextSequence(items, prefix) {
@@ -2030,7 +2055,22 @@ function setLoadDirection(direction) {
 
 function applyCurrentLoad(hitNode = null, hitElement = null, screenPoint = null) {
   if (state.loadMode === "distributed_moment") {
-    showToast("均布力偶的一致荷载向量仍在开发中，当前版本暂不允许施加。");
+    const element = hitElement || (state.selected && state.selected.type === "element" ? getElement(state.selected.id) : null);
+    if (!element) {
+      showToast("均布力偶需要点选一根杆件。");
+      return;
+    }
+    if (solverElementType(element) === "truss") {
+      showToast("桁架杆只能在节点处承受外荷载，不能施加均布力偶。");
+      return;
+    }
+    const intensity = quantityToNumber(els.distributedMoment.value || "0 N*m/m", "N*m/m");
+    if (!Number.isFinite(intensity) || Math.abs(intensity) < 1e-12) {
+      showToast("均布力偶强度不能为 0。");
+      return;
+    }
+    state.elementLoads.push(makeDistributedMomentLoad(element, intensity));
+    setSelection("element", element.id);
     return;
   }
 
@@ -2117,16 +2157,11 @@ function makeElementPointMomentLoad(elementId, ratio) {
 }
 
 function elementRatioAtScreen(element, point) {
-  const nodeI = getNode(element.node_i);
-  const nodeJ = getNode(element.node_j);
-  if (!nodeI || !nodeJ) return 0.5;
-  const a = worldToScreen(nodeI);
-  const b = worldToScreen(nodeJ);
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const length2 = dx * dx + dy * dy;
-  if (!length2) return 0.5;
-  return Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length2));
+  // Ratio is measured along the drawn path (arc length), which is also how
+  // loads are mapped onto the solver segments of curved members.
+  const path = elementScreenPath(element);
+  if (path.length < 2) return 0.5;
+  return GeometryDiscretize.pathRatioAtPoint(path, point);
 }
 
 function elementLengthWorld(element) {
@@ -2134,6 +2169,14 @@ function elementLengthWorld(element) {
   const nodeJ = getNode(element.node_j);
   if (!nodeI || !nodeJ) return 0;
   return Math.hypot(nodeJ.x - nodeI.x, nodeJ.y - nodeI.y);
+}
+
+function makeDistributedMomentLoad(element, intensity) {
+  return {
+    element: element.id,
+    kind: "uniform_moment_local",
+    mz: formatQuantity(intensity, "N*m/m"),
+  };
 }
 
 function makeDistributedLoad(element) {
@@ -2205,42 +2248,42 @@ function openSupportDialog(node) {
   if (!node || !els.supportDialog) return;
   state.dialogNodeId = node.id;
   const support = node.support || supportFromRestraints(node.restraints);
-  const mode = support.mode === "rotating" ? "rotating" : "fixed";
-  const radio = document.querySelector(`input[name='supportMode'][value='${mode}']`);
+  const type = ["pin", "roller", "ground", "fixed"].includes(support.type) ? support.type : "fixed";
+  const radio = document.querySelector(`input[name='supportType'][value='${type}']`);
   if (radio) radio.checked = true;
-  els.supportAngle.value = Number(support.angle || 0);
+  els.supportAngle.value = supportAngleOf(node);
   if (!els.supportDialog.open) els.supportDialog.showModal();
 }
 
 function applySupportSettings() {
   const node = getNode(state.dialogNodeId);
   if (!node) return;
-  const mode = document.querySelector("input[name='supportMode']:checked").value;
-  const angle = Number(els.supportAngle.value || 0);
-  const current = node.support || supportFromRestraints(node.restraints);
-  const type = ["pin", "roller", "ground", "fixed"].includes(current.type) ? current.type : "pin";
-  const orientationExplicit = Boolean(
-    current.orientationExplicit ||
-    current.mode === "rotating" ||
-    mode === "rotating" ||
-    Math.abs(angle - Number(current.angle || 0)) > 1e-9
-  );
+  const checked = document.querySelector("input[name='supportType']:checked");
+  const type = checked ? checked.value : "fixed";
+  const rawAngle = Number(els.supportAngle.value);
+  const angle = Number.isFinite(rawAngle) ? normalizeSupportAngle(rawAngle) : 0;
   mutate(() => {
     if (type === "ground") {
       node.restraints = { ux: true, uy: true, rz: true };
-      node.support = { type: "ground", mode: "fixed-ground", angle, orientationExplicit };
+      node.support = { type: "ground", mode: "fixed-ground", angle, orientationExplicit: true };
     } else if (type === "fixed") {
       node.restraints = { ux: true, uy: true, rz: true };
-      node.support = { type: "fixed", mode: "fixed", angle, orientationExplicit };
+      node.support = { type: "fixed", mode: "fixed", angle, orientationExplicit: true };
     } else if (type === "roller") {
       node.restraints = supportPresetToRestraints("roller");
-      node.support = { type: "roller", mode: mode === "rotating" ? "rotating" : "rolling-ground", angle, orientationExplicit };
+      node.support = { type: "roller", mode: "rolling-ground", angle, orientationExplicit: true };
     } else {
       node.restraints = { ux: true, uy: true, rz: false };
-      node.support = { type: "pin", mode: mode === "rotating" ? "rotating" : "fixed-ground", angle, orientationExplicit };
+      node.support = { type: "pin", mode: "fixed-ground", angle, orientationExplicit: true };
     }
     setSelection("node", node.id);
   });
+}
+
+function normalizeSupportAngle(angle) {
+  let value = ((Number(angle) % 360) + 360) % 360;
+  if (value > 180) value -= 360;
+  return Number(value.toFixed(1));
 }
 
 function openNodeDialog(node) {
@@ -2287,16 +2330,19 @@ async function solveProject(scope = "whole") {
       body: JSON.stringify(project),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "求解失败。");
-    state.result = payload;
+    if (!response.ok) throw new Error(translateSolverError(payload.error || "求解失败。"));
+    state.result = GeometryDiscretize.mergeResult(payload, project.expansion);
+    state.expansion = project.expansion || {};
+    state.scopeElements = project.scopeElements || null;
     state.lastProject = project;
     state.lastScope = scope;
-    els.resultText.textContent = formatResult(payload, project, scope);
+    els.resultText.textContent = formatResult(state.result, project, scope);
     applySolveDisplayOptions();
     showToast("求解完成。");
     draw();
   } catch (error) {
     state.result = null;
+    state.scopeElements = null;
     els.resultText.textContent = String(error.message || error);
     showToast(String(error.message || error));
     draw();
@@ -2315,19 +2361,38 @@ function applySolveDisplayOptions() {
 function formatResult(payload, project, scope) {
   const summary = payload.summary || {};
   const optionLabels = state.solveOptions.map((option) => solveOptionLabel(option));
+  const scopeElements = project.scopeElements || null;
+  const scopeNodes = scopeElements ? scopeNodeIds(scopeElements) : null;
+  const elementInScope = (id) => !scopeElements || scopeElements.has(id);
+  const nodeInScope = (id) => !scopeNodes || scopeNodes.has(id);
   const lines = [
     "求解结果",
-    `求解范围：${scope === "selection" ? "选中隔离体" : "整体模型"}`,
+    `求解范围：${scope === "selection" ? "选中隔离体（结果视图）" : "整体模型"}`,
     `求解内容：${optionLabels.join("、") || "未指定"}`,
-    `体系判断：${simpleSystemJudgement(project)}`,
+    `体系判断：${systemJudgementText(payload)}`,
     "",
   ];
+  if (scopeElements) {
+    const ids = [...scopeElements].sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+    lines.push("隔离体说明");
+    lines.push(`- 模型始终整体求解；下列结果只显示所选杆件 ${ids.join("、")} 及其端节点。`);
+    lines.push("- 杆端内力 Ni/Vi/Mi、Nj/Vj/Mj 即隔离体切口处的内力（节点作用在杆端上的力），内力图、极值和危险截面同样只统计所选杆件。");
+    lines.push("");
+  }
+
+  const discretised = discretisationLines(project.expansion);
+  if (discretised.length) {
+    lines.push("几何离散");
+    lines.push(...discretised);
+    lines.push("");
+  }
 
   appendDiagnosticsResult(lines, summary.diagnostics);
 
   if (state.solveOptions.includes("displacement")) {
     lines.push("节点位移与转角");
     for (const [nodeId, values] of sortedEntries(payload.displacements || {})) {
+      if (!nodeInScope(nodeId)) continue;
       lines.push(
         `- ${nodeId}: ux=${formatSigned(values.ux * 1000)} mm，uy=${formatSigned(values.uy * 1000)} mm，θ=${formatSigned(values.rz)} rad`
       );
@@ -2337,21 +2402,29 @@ function formatResult(payload, project, scope) {
 
   if (state.solveOptions.includes("reaction")) {
     lines.push("支座反力");
-    const reactions = sortedEntries(payload.reactions || {});
-    if (!reactions.length) lines.push("- 未形成支座反力。");
+    const reactions = sortedEntries(payload.reactions || {}).filter(([nodeId]) => nodeInScope(nodeId));
+    if (!reactions.length) lines.push(scopeElements ? "- 所选隔离体内没有支座节点。" : "- 未形成支座反力。");
     for (const [nodeId, values] of reactions) {
-      lines.push(
-        `- ${nodeId}: Fx=${formatSigned((values.fx || 0) / 1000)} kN，Fy=${formatSigned((values.fy || 0) / 1000)} kN，Mz=${formatSigned(
-          (values.mz || 0) / 1000
-        )} kN·m`
-      );
+      let text = `- ${nodeId}: Fx=${formatSigned((values.fx || 0) / 1000)} kN，Fy=${formatSigned((values.fy || 0) / 1000)} kN，Mz=${formatSigned(
+        (values.mz || 0) / 1000
+      )} kN·m`;
+      const projectNode = (project.nodes || []).find((node) => node.id === nodeId);
+      const angle = Number(projectNode && projectNode.support_angle);
+      if (Number.isFinite(angle) && Math.abs(angle) > 1e-9) {
+        const radians = (angle * Math.PI) / 180;
+        const normal = -Math.sin(radians) * (values.fx || 0) + Math.cos(radians) * (values.fy || 0);
+        const tangent = Math.cos(radians) * (values.fx || 0) + Math.sin(radians) * (values.fy || 0);
+        text += `；支座转角 ${formatNumber(angle, 1)}°，法向反力 R⊥=${formatSigned(normal / 1000)} kN，沿地面 R∥=${formatSigned(tangent / 1000)} kN`;
+      }
+      lines.push(text);
     }
     lines.push("");
   }
 
   if (state.solveOptions.includes("internal")) {
-    lines.push("杆端内力");
+    lines.push(scopeElements ? "杆端内力（隔离体切口内力）" : "杆端内力");
     for (const [elementId, values] of sortedEntries(payload.element_end_forces || {})) {
+      if (!elementInScope(elementId)) continue;
       lines.push(
         `- ${elementId}: Ni=${formatSigned(values.n_i / 1000)} kN，Vi=${formatSigned(values.v_i / 1000)} kN，Mi=${formatSigned(
           values.m_i / 1000
@@ -2370,7 +2443,7 @@ function formatResult(payload, project, scope) {
   if (extrema.length) {
     lines.push("内力图极值");
     for (const [label, component, scale, unit] of extrema) {
-      const item = resultExtrema(payload, component, scale);
+      const item = resultExtrema(payload, component, scale, elementInScope);
       if (!item) continue;
       lines.push(
         `- ${label}: 最大 ${formatSigned(item.max.value)} ${unit}（${item.max.element}, x=${formatNumber(item.max.x)} m），最小 ${formatSigned(
@@ -2382,12 +2455,13 @@ function formatResult(payload, project, scope) {
   }
 
   if (state.solveOptions.includes("stress") || state.solveOptions.includes("strain") || state.solveOptions.includes("stress_strain")) {
-    appendStressStrainSummary(lines, payload, project);
+    appendStressStrainSummary(lines, payload, project, elementInScope);
   }
 
-  if (state.solveOptions.includes("danger") && (summary.dangerous_sections || []).length) {
+  const dangerousSections = (summary.dangerous_sections || []).filter((item) => elementInScope(item.element));
+  if (state.solveOptions.includes("danger") && dangerousSections.length) {
     lines.push("危险截面");
-    for (const item of summary.dangerous_sections.slice(0, 3)) {
+    for (const item of dangerousSections.slice(0, 3)) {
       lines.push(`- ${item.element}: x=${formatNumber(item.x)} m，|M|=${formatSigned(Math.abs(item.moment) / 1000)} kN·m`);
     }
     lines.push("");
@@ -2395,7 +2469,7 @@ function formatResult(payload, project, scope) {
 
   if (state.solveOptions.includes("flexibility")) {
     lines.push("柔度");
-    const flexibility = summary.load_point_flexibility || [];
+    const flexibility = (summary.load_point_flexibility || []).filter((item) => nodeInScope(item.node));
     if (!flexibility.length) lines.push("- 当前荷载点没有可计算的柔度结果。");
     for (const item of flexibility) {
       const unit = item.kind === "rotation" ? "rad/(N·m)" : "m/N";
@@ -2412,6 +2486,7 @@ function formatResult(payload, project, scope) {
   lines.push("3. 把集中荷载、分布荷载换算成等效节点荷载，组装总体方程 [K]{u}={P}。");
   lines.push("4. 按支座约束消去受限自由度，求得节点位移 ux、uy 和转角 θ。");
   lines.push("5. 由 {R}=[K]{u}-{P} 得到支座反力，由杆端位移反算 Ni、Vi、Mi、Nj、Vj、Mj，并沿杆长插值得到 N/V/M 图。");
+  lines.push("   内力图符号约定：轴力 N 以拉为正、压为负；弯矩 M 以杆件下侧（局部 -y 侧）受拉为正；剪力 V 取截面左侧横向力之和。");
   if (state.solveOptions.includes("stress") || state.solveOptions.includes("strain") || state.solveOptions.includes("stress_strain")) {
     lines.push("6. 应力按 σ=N/A+M·c/I 估算，应变按 ε=σ/E 计算；当前 c 取等效截面高度 sqrt(A)/2。");
   }
@@ -2504,9 +2579,10 @@ function formatSigned(value, digits = 4) {
   return formatNumber(value, digits);
 }
 
-function resultExtrema(payload, component, scale = 1) {
+function resultExtrema(payload, component, scale = 1, include = () => true) {
   const points = [];
   for (const [elementId, rows] of sortedEntries(payload.element_diagrams || {})) {
+    if (!include(elementId)) continue;
     for (const row of rows || []) {
       points.push({ element: elementId, x: Number(row.x || 0), value: Number(row[component] || 0) * scale });
     }
@@ -2518,9 +2594,10 @@ function resultExtrema(payload, component, scale = 1) {
   };
 }
 
-function appendStressStrainSummary(lines, payload, project) {
+function appendStressStrainSummary(lines, payload, project, include = () => true) {
   const values = [];
   for (const [elementId, rows] of sortedEntries(payload.element_diagrams || {})) {
+    if (!include(elementId)) continue;
     for (const row of rows || []) {
       const stress = stressAtProjectRow(row, project);
       values.push({
@@ -2557,12 +2634,32 @@ function projectElasticModulus(project) {
   return Math.max(quantityToNumber(material.E || els.materialE.value, "Pa"), 1);
 }
 
-function simpleSystemJudgement(project) {
-  const restraints = project.nodes.reduce((sum, node) => sum + (node.restraints || []).length, 0);
-  if (project.nodes.length === 0 || project.elements.length === 0) return "未形成结构";
-  if (restraints < 3) return "常变或瞬变风险：约束自由度少于 3";
-  if (restraints === 3) return "外部静定近似，不变体系需结合几何继续判断";
-  return `外部超静定近似，冗余约束约 ${restraints - 3}`;
+function systemJudgementText(payload) {
+  const system = payload && payload.summary && payload.summary.system;
+  if (!system || !Number.isFinite(Number(system.degrees_of_freedom))) return "后端未提供体系判断";
+  const W = Number(system.degrees_of_freedom);
+  const hinges = Number(system.hinged_connections || 0);
+  const pins = Number(system.pin_joints || 0);
+  let count = `W = 3×${system.joints} − 3×${system.members}`;
+  if (hinges) count += ` + ${hinges}（铰接端）`;
+  count += ` − ${system.restraints}（约束）`;
+  if (pins) count += ` − ${pins}（全铰节点）`;
+  count += ` = ${W}`;
+  if (system.classification === "unstable") return `几何可变体系（常变），${count}`;
+  if (system.classification === "determinate") return `几何不变、静定结构（刚度矩阵满秩），${count}`;
+  return `几何不变、${system.indeterminacy} 次超静定结构（刚度矩阵满秩），${count}`;
+}
+
+function translateSolverError(message) {
+  const text = String(message || "");
+  if (/At least three restrained DOFs/i.test(text)) return "体系判断：约束自由度少于 3，属于几何可变体系，无法求解。请补充支座。";
+  if (/Isolated nodes are not allowed/i.test(text)) return `存在未连接杆件的孤立节点，无法求解：${text.split(":").pop().trim()}`;
+  if (/at least one element/i.test(text)) return "模型中还没有杆件。";
+  if (/at least one node/i.test(text)) return "模型中还没有节点。";
+  if (/Model has no free degrees of freedom/i.test(text)) return "模型没有自由度（所有节点都被完全约束），无需求解。";
+  if (/Unsupported element type/i.test(text)) return `后端不支持该杆件类型，请在前端离散为直杆后求解：${text}`;
+  if (/geometrically unstable/i.test(text)) return text.replace(/\s*\[Structure is geometrically unstable[^\]]*\]\s*$/, "");
+  return text;
 }
 
 async function downloadReport() {
@@ -4454,26 +4551,11 @@ function supportFromRestraints(restraints) {
 }
 
 function supportDirection(node) {
-  const support = node.support || {};
-  if ((support.mode === "rotating" || support.orientationExplicit) && Number.isFinite(Number(support.angle)) && support.type !== "free") {
-    const radians = Number(support.angle) * (Math.PI / 180);
-    return { x: Math.cos(radians), y: -Math.sin(radians) };
-  }
-  return connectedDirection(node);
-}
-
-function connectedDirection(node) {
-  for (const element of state.elements) {
-    if (element.node_i === node.id || element.node_j === node.id) {
-      const other = getNode(element.node_i === node.id ? element.node_j : element.node_i);
-      if (!other) continue;
-      const dx = other.x - node.x;
-      const dy = other.y - node.y;
-      const length = Math.hypot(dx, dy) || 1;
-      return { x: dx / length, y: -dy / length };
-    }
-  }
-  return { x: 0, y: -1 };
+  // Unit vector (screen space) pointing from the ground towards the node.
+  // Angle 0 puts the ground below the node; positive angles rotate the
+  // support counter-clockwise, matching the solver's support_angle.
+  const radians = supportAngleOf(node) * (Math.PI / 180);
+  return { x: -Math.sin(radians), y: -Math.cos(radians) };
 }
 
 function drawFixedSupport(point, dir) {
@@ -4599,10 +4681,8 @@ function drawElementPointLoad(load) {
   const nodeI = getNode(element.node_i);
   const nodeJ = getNode(element.node_j);
   if (!nodeI || !nodeJ) return;
-  const a = worldToScreen(nodeI);
-  const b = worldToScreen(nodeJ);
   const ratio = Math.max(0, Math.min(1, Number(load.ratio ?? 0.5)));
-  const point = { x: a.x + (b.x - a.x) * ratio, y: a.y + (b.y - a.y) * ratio };
+  const point = GeometryDiscretize.pointAtPathRatio(elementScreenPath(element), ratio);
   const fx = quantityToNumber(load.fx, "N");
   const fy = quantityToNumber(load.fy, "N");
   const magnitude = Math.hypot(fx, fy);
@@ -4693,6 +4773,7 @@ function drawUniformMomentLoad(load, a, b, normal) {
 function distributedLoadLabel(load) {
   if (load.kind === "uniform_local") return load.qy || load.qx || "0 N/m";
   if (load.kind === "linear_local") return `${load.qy_i || "0 N/m"} → ${load.qy_j || "0 N/m"}`;
+  if (load.kind === "uniform_moment_local") return load.mz || "0 N*m/m";
   return "q(x)";
 }
 
@@ -4718,19 +4799,43 @@ function drawDeformedShape() {
   ctx.setLineDash([8, 6]);
   ctx.lineWidth = 2;
   for (const element of state.elements) {
-    const a = deformedScreenPoint(getNode(element.node_i), factor);
-    const b = deformedScreenPoint(getNode(element.node_j), factor);
-    line(a, b);
+    const nodeI = getNode(element.node_i);
+    const nodeJ = getNode(element.node_j);
+    if (!nodeI || !nodeJ) continue;
+    const info = state.expansion && state.expansion[element.id];
+    if (info && info.segments.length) {
+      // Discretised member: follow the sub-node chain with the raw solver displacements.
+      const points = [deformedScreenPoint(nodeI, factor)];
+      info.segments.forEach((segment, index) => {
+        const nodeId = info.nodeIds[index + 1];
+        const world = index === info.segments.length - 1 ? nodeJ : { id: nodeId, x: segment.to.x, y: segment.to.y };
+        points.push(deformedScreenPoint(world, factor));
+      });
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+      for (const point of points.slice(1)) ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+      continue;
+    }
+    line(deformedScreenPoint(nodeI, factor), deformedScreenPoint(nodeJ, factor));
   }
   ctx.restore();
 }
 
 function deformedScreenPoint(node, factor) {
-  const displacement = (state.result.displacements && state.result.displacements[node.id]) || {};
+  const source = (state.result && state.result.raw && state.result.raw.displacements) || (state.result && state.result.displacements) || {};
+  const displacement = source[node.id] || {};
   return worldToScreen({
     x: node.x + Number(displacement.ux || 0) * factor,
     y: node.y + Number(displacement.uy || 0) * factor,
   });
+}
+
+function elementScreenPath(element) {
+  const nodeI = getNode(element.node_i);
+  const nodeJ = getNode(element.node_j);
+  if (!nodeI || !nodeJ) return [];
+  return GeometryDiscretize.elementPath(element, nodeI, nodeJ).map((point) => worldToScreen(point));
 }
 
 function drawDiagrams() {
@@ -4871,6 +4976,7 @@ function chartData(component) {
   const data = [];
   let offset = 0;
   for (const element of state.elements) {
+    if (!inScope(element.id)) continue;
     const rows = diagrams[element.id] || [];
     if (!rows.length) continue;
     const elementLength = rows[rows.length - 1].x || elementLengthFromModel(element);
@@ -5064,8 +5170,10 @@ function drawText(text, x, y, color) {
   ctx.restore();
 }
 
-function isRotatableSupport(node) {
-  return node && node.support && ["pin", "roller"].includes(node.support.type) && node.support.mode === "rotating";
+function isRotatableSupport(node, event = null) {
+  if (!isSupportNode(node)) return false;
+  if (event && event.altKey) return true;
+  return Boolean(node.support && node.support.mode === "rotating");
 }
 
 function isSupportNode(node) {
@@ -5073,11 +5181,13 @@ function isSupportNode(node) {
 }
 
 function angleFromSupportDrag(node, point) {
+  // The ground faces the pointer: pointer straight below the node is angle 0,
+  // pointer to the right is +90° (counter-clockwise from "ground below").
   const center = worldToScreen(node);
   const dx = point.x - center.x;
   const dy = point.y - center.y;
-  if (Math.hypot(dx, dy) < 1) return Number(node.support?.angle || 0);
-  return Number((Math.atan2(-dy, dx) * 180 / Math.PI).toFixed(1));
+  if (Math.hypot(dx, dy) < 1) return supportAngleOf(node);
+  return normalizeSupportAngle((Math.atan2(dx, dy) * 180) / Math.PI);
 }
 
 function pushUndoForInteraction(interaction) {
@@ -5099,7 +5209,7 @@ canvas.addEventListener("mousedown", (event) => {
   }
   const hitNode = nodeOrSupportAtScreen(point.x, point.y);
   const hitElement = elementAtScreen(point.x, point.y);
-  if (state.tool === "select" && isRotatableSupport(hitNode)) {
+  if (state.tool === "select" && isRotatableSupport(hitNode, event)) {
     state.rotateSupport = {
       nodeId: hitNode.id,
       start: point,

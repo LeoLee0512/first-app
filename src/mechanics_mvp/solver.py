@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from .models import DOFS, AnalysisResult, Element, ElementLoad, Project
+from .models import DOFS, AnalysisResult, Element, ElementLoad, Node, Project
 from .preprocess import validate_project
 
 REACTION_LABELS = {"ux": "fx", "uy": "fy", "rz": "mz"}
@@ -71,24 +71,40 @@ class Frame2DSolver:
                 if is_restrained:
                     restrained.append(dof_index[(node.id, DOFS[dof_pos])])
 
+        # Inclined supports: rotate the translational DOFs of every node with a
+        # support angle into the support axes (x' along the ground, y' normal to
+        # it) with the block-diagonal matrix T, so the restraints can be applied
+        # as ordinary fixed DOFs: K' = T K Tᵀ, P' = T P, u = Tᵀ u'.
+        support_rotation = _support_rotation(project, dof_index)
+        rotated_stiffness = support_rotation @ stiffness @ support_rotation.T
+        rotated_loads = support_rotation @ loads
+
         all_dofs = np.arange(total_dofs)
         free = np.array([index for index in all_dofs if index not in restrained], dtype=int)
-        free = _active_free_dofs(stiffness, loads, free)
+        free = _active_free_dofs(rotated_stiffness, rotated_loads, free)
         restrained_array = np.array(restrained, dtype=int)
+
+        system = classify_system(project)
 
         if free.size == 0:
             raise SolverError("Model has no free degrees of freedom.")
 
-        k_ff = stiffness[np.ix_(free, free)]
-        p_f = loads[free]
-        displacements = np.zeros(total_dofs, dtype=float)
+        k_ff = rotated_stiffness[np.ix_(free, free)]
+        p_f = rotated_loads[free]
+        # A rank-deficient K_ff means a rigid-body mechanism survives the
+        # restraints: either too few of them (W > 0) or an improper layout
+        # (parallel / concurrent reactions) that the count cannot detect.
+        if np.linalg.matrix_rank(k_ff) < k_ff.shape[0]:
+            raise SolverError(unstable_system_message(system))
+        rotated_displacements = np.zeros(total_dofs, dtype=float)
         try:
-            displacements[free] = np.linalg.solve(k_ff, p_f)
+            rotated_displacements[free] = np.linalg.solve(k_ff, p_f)
         except np.linalg.LinAlgError as exc:
-            raise SolverError(
-                "Stiffness matrix is singular. Check restraints, disconnected geometry, or mechanisms."
-            ) from exc
+            raise SolverError(unstable_system_message(system)) from exc
 
+        displacements = support_rotation.T @ rotated_displacements
+        # Reactions are evaluated in global axes; an inclined support therefore
+        # reports both global components of its single normal reaction.
         reactions_vector = stiffness @ displacements - loads
 
         displacement_map = _map_node_vectors(project, displacements, dof_index)
@@ -101,6 +117,7 @@ class Frame2DSolver:
         )
         element_diagrams = _map_element_diagrams(project, element_end_forces, load_integrals)
         summary = _build_summary(project, displacement_map, reaction_map, element_end_forces, element_diagrams)
+        summary["system"] = system
 
         return AnalysisResult(
             displacements=displacement_map,
@@ -253,6 +270,13 @@ def _consistent_element_load(load: ElementLoad, length: float, transform: np.nda
     if load.kind == "point_global":
         return _consistent_point_load(load, length, transform)
 
+    if load.kind == "uniform_moment_local":
+        # A uniform couple m (N*m/m, counter-clockwise positive) works against
+        # the slope v'(x) = Σ H_i'(x) d_i, so the consistent load is
+        # ∫ m H_i'(x) dx = m [H_i(L) - H_i(0)]: only the two translational
+        # Hermite functions change value over the element.
+        return np.array([0.0, -load.mz, 0.0, 0.0, load.mz, 0.0], dtype=float)
+
     result = np.zeros(6, dtype=float)
     points, weights = np.polynomial.legendre.leggauss(8)
     for point, weight in zip(points, weights):
@@ -350,6 +374,19 @@ def _axis_attr(load: ElementLoad, axis: str, end: str) -> float | None:
 
 def _load_integrals(load: ElementLoad, length: float, transform: np.ndarray) -> dict[str, object]:
     samples = np.linspace(0.0, length, 41)
+    if load.kind == "uniform_moment_local":
+        # The couple has no force resultant; moment equilibrium of the segment
+        # [0, x] gives a linear contribution -m·x to the bending moment.
+        zeros = np.zeros_like(samples, dtype=float)
+        return {
+            "x": samples,
+            "qx": zeros.copy(),
+            "qy": zeros.copy(),
+            "axial": zeros.copy(),
+            "shear": zeros.copy(),
+            "moment": -float(load.mz) * samples,
+            "point_events": [],
+        }
     if load.kind == "point_global":
         if load.ratio is None:
             raise SolverError(f"Point load on element {load.element} has no position ratio.")
@@ -429,6 +466,118 @@ def _element_indexes(element: Element, dof_index: dict[tuple[str, str], int]) ->
     ]
 
 
+def classify_system(project: Project) -> dict[str, object]:
+    """Kinematic degree-of-freedom count W of the plane structure.
+
+    Every member is a rigid body (3 DOFs) and every joint is a rigid body
+    (3 DOFs). A rigid member-joint connection removes 3 DOFs, a hinged one
+    (moment release, or either end of a truss bar) removes 2, so each hinged
+    connection leaves one extra DOF. A joint whose connections are all hinged
+    is a pin joint: its own rotation is not a physical DOF, so it is removed
+    and an rz restraint at such a joint is not counted. Support restraints
+    remove one DOF each::
+
+        W = 3N - 3m + h - r - N_pin
+
+    For rigid-jointed frames this is the textbook W = 3N - 3m - r. W > 0 is
+    a mechanism; W <= 0 is only a necessary condition for stability, the
+    sufficient check is the rank of the stiffness matrix.
+    """
+
+    hinged_connections = 0
+    hinged_at_node: dict[str, int] = {node.id: 0 for node in project.nodes}
+    connections_at_node: dict[str, int] = {node.id: 0 for node in project.nodes}
+    for element in project.elements:
+        connections_at_node[element.node_i] += 1
+        connections_at_node[element.node_j] += 1
+        if element.type == "truss":
+            hinged_connections += 2
+            hinged_at_node[element.node_i] += 1
+            hinged_at_node[element.node_j] += 1
+            continue
+        if element.moment_release_i:
+            hinged_connections += 1
+            hinged_at_node[element.node_i] += 1
+        if element.moment_release_j:
+            hinged_connections += 1
+            hinged_at_node[element.node_j] += 1
+
+    pin_joints = [
+        node.id
+        for node in project.nodes
+        if connections_at_node[node.id] > 0 and hinged_at_node[node.id] == connections_at_node[node.id]
+    ]
+    pin_joint_set = set(pin_joints)
+    restraints = 0
+    for node in project.nodes:
+        restraints += int(node.restraints[0]) + int(node.restraints[1])
+        if node.restraints[2] and node.id not in pin_joint_set:
+            restraints += 1
+
+    joints = len(project.nodes)
+    members = len(project.elements)
+    freedom = 3 * joints - 3 * members + hinged_connections - restraints - len(pin_joints)
+    if freedom > 0:
+        classification = "unstable"
+    elif freedom == 0:
+        classification = "determinate"
+    else:
+        classification = "indeterminate"
+    return {
+        "degrees_of_freedom": int(freedom),
+        "indeterminacy": int(max(0, -freedom)),
+        "joints": int(joints),
+        "members": int(members),
+        "restraints": int(restraints),
+        "hinged_connections": int(hinged_connections),
+        "pin_joints": int(len(pin_joints)),
+        "classification": classification,
+    }
+
+
+def unstable_system_message(system: dict[str, object]) -> str:
+    freedom = int(system["degrees_of_freedom"])
+    if freedom > 0:
+        return (
+            f"体系判断：几何可变体系（常变），计算自由度 W = {freedom} > 0，刚度矩阵奇异，无法求解。"
+            "请补充支座或杆件约束。"
+            f" [Structure is geometrically unstable: W = {freedom} > 0.]"
+        )
+    return (
+        f"体系判断：约束数量满足 W = {freedom} ≤ 0，但约束布置不当（反力平行或汇交、局部机构），"
+        "刚度矩阵奇异，属于瞬变或几何可变体系，无法求解。请检查支座方向、铰的位置和杆件连通性。"
+        f" [Structure is geometrically unstable: W = {freedom} <= 0 but the restraints are improperly arranged.]"
+    )
+
+
+def _is_inclined(node: Node) -> bool:
+    return abs(math.remainder(float(node.support_angle), 360.0)) > 1e-9
+
+
+def _support_rotation(project: Project, dof_index: dict[tuple[str, str], int]) -> np.ndarray:
+    """Block-diagonal rotation from global nodal DOFs to support-aligned DOFs.
+
+    For a node whose support is rotated by θ (counter-clockwise), the support
+    axes are x' = (cos θ, sin θ) and y' = (-sin θ, cos θ); ``u' = T u``.
+    Rotations rz are unchanged. Nodes without an angle keep the identity.
+    """
+
+    size = len(project.nodes) * len(DOFS)
+    rotation = np.eye(size, dtype=float)
+    for node in project.nodes:
+        if not _is_inclined(node):
+            continue
+        angle = math.radians(float(node.support_angle))
+        cosine, sine = math.cos(angle), math.sin(angle)
+        ux = dof_index[(node.id, "ux")]
+        uy = dof_index[(node.id, "uy")]
+        rotation[ux, ux] = cosine
+        rotation[ux, uy] = sine
+        rotation[uy, ux] = -sine
+        rotation[uy, uy] = cosine
+    return rotation
+
+
 def _element_by_id(project: Project, element_id: str) -> Element:
     for element in project.elements:
         if element.id == element_id:
@@ -457,9 +606,10 @@ def _map_reactions(
     result: dict[str, dict[str, float]] = {}
     for node in project.nodes:
         node_reactions: dict[str, float] = {}
+        inclined_translation = _is_inclined(node) and (node.restraints[0] or node.restraints[1])
         for dof in DOFS:
             index = dof_index[(node.id, dof)]
-            if index in restrained_set:
+            if index in restrained_set or (inclined_translation and dof in ("ux", "uy")):
                 node_reactions[REACTION_LABELS[dof]] = float(reactions[index])
         if node_reactions:
             result[node.id] = node_reactions
@@ -499,7 +649,12 @@ def _map_element_diagrams(
         rows: list[dict[str, float]] = []
         for position in np.linspace(0.0, length, 21):
             q_integral = _interpolated_integrals(integrals, position) if integrals else {}
-            axial = forces["n_i"] - float(q_integral.get("axial", 0.0))
+            # Sign conventions along the local x axis of the element:
+            # axial N is tension-positive, shear V is the resultant of the
+            # transverse forces to the left of the section, and bending moment
+            # M is positive when the lower fibre (local -y side) is in tension.
+            # Equilibrium of the segment [0, x]: n_i + ∫qx + Σfx + N = 0.
+            axial = -forces["n_i"] - float(q_integral.get("axial", 0.0))
             shear = forces["v_i"] + float(q_integral.get("shear", 0.0))
             moment = -forces["m_i"] + forces["v_i"] * position + float(q_integral.get("moment", 0.0))
             rows.append(
@@ -526,6 +681,9 @@ def _interpolated_integrals(integrals: dict[str, object], position: float) -> di
         event_x = float(event["x"])
         if position + 1e-12 < event_x:
             continue
+        # A concentrated local +x force to the left of the section enters the
+        # axial resultant exactly like the distributed qx integral; the
+        # tension-positive sign is applied once in `_map_element_diagrams`.
         result["axial"] += float(event["fx"])
         result["shear"] += float(event["fy"])
         result["moment"] += float(event["fy"]) * (position - event_x) - float(event["mz"])
