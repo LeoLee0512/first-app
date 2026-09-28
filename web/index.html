@@ -855,8 +855,13 @@
         </section>
 
         <section id="distributedMomentPanel" class="modal-section hidden">
-          <p>均布力偶的一致荷载向量仍在开发中，当前版本暂不允许施加。</p>
-          <input id="distributedMoment" type="hidden" value="0 N*m/m">
+          <label class="wide-field">
+            <span>均布力偶强度 m（逆时针为正，单位 N·m/m 或 kN·m/m）</span>
+            <input id="distributedMoment" value="3 kN*m/m">
+          </label>
+          <p class="capability-note">
+            等效节点荷载取 [0, −m, 0, 0, +m, 0]（由 ∫m·H′ᵢ dx 得到），弯矩图叠加 −m·x。悬臂梁自由端转角为 mL²/(2EI)。
+          </p>
         </section>
 
         <footer class="modal-actions">

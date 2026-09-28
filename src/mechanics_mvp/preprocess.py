@@ -13,7 +13,13 @@ class ValidationError(ValueError):
 
 
 SUPPORTED_ELEMENT_TYPES = {"frame", "rigid", "arc", "tee", "truss"}
-SUPPORTED_ELEMENT_LOADS = {"uniform_local", "linear_local", "polynomial_local", "point_global"}
+SUPPORTED_ELEMENT_LOADS = {
+    "uniform_local",
+    "linear_local",
+    "polynomial_local",
+    "point_global",
+    "uniform_moment_local",
+}
 
 
 def validate_project(project: Project) -> None:

@@ -1667,9 +1667,6 @@ function solverElementType(element) {
 }
 
 function projectElementLoads(model) {
-  if (model.elementLoads.some((load) => load.kind === "uniform_moment_local")) {
-    throw new Error("均布力偶的一致荷载向量仍在开发中，请先删除该荷载后求解。");
-  }
   const distributedLoads = model.elementLoads.map((load) => ({ ...load }));
   const pointLoads = model.loads
     .filter((load) => load.kind === "element_point" && load.element)
@@ -2030,7 +2027,22 @@ function setLoadDirection(direction) {
 
 function applyCurrentLoad(hitNode = null, hitElement = null, screenPoint = null) {
   if (state.loadMode === "distributed_moment") {
-    showToast("均布力偶的一致荷载向量仍在开发中，当前版本暂不允许施加。");
+    const element = hitElement || (state.selected && state.selected.type === "element" ? getElement(state.selected.id) : null);
+    if (!element) {
+      showToast("均布力偶需要点选一根杆件。");
+      return;
+    }
+    if (solverElementType(element) === "truss") {
+      showToast("桁架杆只能在节点处承受外荷载，不能施加均布力偶。");
+      return;
+    }
+    const intensity = quantityToNumber(els.distributedMoment.value || "0 N*m/m", "N*m/m");
+    if (!Number.isFinite(intensity) || Math.abs(intensity) < 1e-12) {
+      showToast("均布力偶强度不能为 0。");
+      return;
+    }
+    state.elementLoads.push(makeDistributedMomentLoad(element, intensity));
+    setSelection("element", element.id);
     return;
   }
 
@@ -2134,6 +2146,14 @@ function elementLengthWorld(element) {
   const nodeJ = getNode(element.node_j);
   if (!nodeI || !nodeJ) return 0;
   return Math.hypot(nodeJ.x - nodeI.x, nodeJ.y - nodeI.y);
+}
+
+function makeDistributedMomentLoad(element, intensity) {
+  return {
+    element: element.id,
+    kind: "uniform_moment_local",
+    mz: formatQuantity(intensity, "N*m/m"),
+  };
 }
 
 function makeDistributedLoad(element) {
@@ -4694,6 +4714,7 @@ function drawUniformMomentLoad(load, a, b, normal) {
 function distributedLoadLabel(load) {
   if (load.kind === "uniform_local") return load.qy || load.qx || "0 N/m";
   if (load.kind === "linear_local") return `${load.qy_i || "0 N/m"} → ${load.qy_j || "0 N/m"}`;
+  if (load.kind === "uniform_moment_local") return load.mz || "0 N*m/m";
   return "q(x)";
 }
 

@@ -339,6 +339,8 @@ def _element_load_description(load: ElementLoad) -> str:
             f"类型=局部坐标线性分布荷载，qx(i/j)={_fmt(qx_i / 1000)}/{_fmt(qx_j / 1000)} kN/m，"
             f"qy(i/j)={_fmt(qy_i / 1000)}/{_fmt(qy_j / 1000)} kN/m"
         )
+    if load.kind == "uniform_moment_local":
+        return f"类型=局部坐标均布力偶，m={_fmt(load.mz / 1000)} kN·m/m（逆时针为正）"
     if load.kind == "polynomial_local":
         qx = ", ".join(_fmt(value / 1000) for value in load.qx_coefficients) or "0"
         qy = ", ".join(_fmt(value / 1000) for value in load.qy_coefficients) or "0"

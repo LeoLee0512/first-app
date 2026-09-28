@@ -18,7 +18,13 @@
   const LEGACY_GEOMETRIES = new Set(["arc", "tee", "freeform", "right_angle"]);
   const STATIC_ELEMENT_TYPES = new Set(["frame", "truss", "rigid"]);
   const STATIC_GEOMETRIES = new Set(["straight", "arc", "tee", "freeform", "right_angle"]);
-  const STATIC_ELEMENT_LOADS = new Set(["uniform_local", "linear_local", "polynomial_local", "point_global"]);
+  const STATIC_ELEMENT_LOADS = new Set([
+    "uniform_local",
+    "linear_local",
+    "polynomial_local",
+    "point_global",
+    "uniform_moment_local",
+  ]);
   const DYNAMICS_OBJECT_KINDS = new Set(["particle", "rod", "circle", "ring", "rectangle", "custom"]);
   const DYNAMICS_FIELD_KINDS = new Set(["gravity", "electric", "magnetic"]);
   const DYNAMICS_RANGE_TYPES = new Set(["global", "rectangle", "circle", "custom"]);
@@ -315,8 +321,12 @@
     const element = elementById.get(elementId);
     if (!element) throw new Error(`单元荷载引用了不存在的单元 ${elementId}。`);
     const kind = String(load.kind || "");
-    if (kind === "uniform_moment_local") throw new Error(`当前版本不支持单元 ${elementId} 的均布力偶 uniform_moment_local。`);
     if (!STATIC_ELEMENT_LOADS.has(kind)) throw new Error(`单元 ${elementId} 的荷载类型 ${kind || "(空)"} 不受支持。`);
+    if (kind === "uniform_moment_local") {
+      if (element.type === "truss") throw new Error(`桁架单元 ${elementId} 不允许均布力偶 uniform_moment_local。`);
+      if (load.mz !== undefined) parseQuantity(load.mz, "N*m/m", `单元 ${elementId} 均布力偶的 mz`);
+      return;
+    }
     if (kind === "point_global") {
       const ratio = assertFiniteNumber(load.ratio, `单元 ${elementId} 集中荷载的 ratio`);
       if (ratio < 0 || ratio > 1) throw new Error(`单元 ${elementId} 集中荷载的 ratio 必须在 [0, 1] 内。`);

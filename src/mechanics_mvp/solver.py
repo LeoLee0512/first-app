@@ -253,6 +253,13 @@ def _consistent_element_load(load: ElementLoad, length: float, transform: np.nda
     if load.kind == "point_global":
         return _consistent_point_load(load, length, transform)
 
+    if load.kind == "uniform_moment_local":
+        # A uniform couple m (N*m/m, counter-clockwise positive) works against
+        # the slope v'(x) = Σ H_i'(x) d_i, so the consistent load is
+        # ∫ m H_i'(x) dx = m [H_i(L) - H_i(0)]: only the two translational
+        # Hermite functions change value over the element.
+        return np.array([0.0, -load.mz, 0.0, 0.0, load.mz, 0.0], dtype=float)
+
     result = np.zeros(6, dtype=float)
     points, weights = np.polynomial.legendre.leggauss(8)
     for point, weight in zip(points, weights):
@@ -350,6 +357,19 @@ def _axis_attr(load: ElementLoad, axis: str, end: str) -> float | None:
 
 def _load_integrals(load: ElementLoad, length: float, transform: np.ndarray) -> dict[str, object]:
     samples = np.linspace(0.0, length, 41)
+    if load.kind == "uniform_moment_local":
+        # The couple has no force resultant; moment equilibrium of the segment
+        # [0, x] gives a linear contribution -m·x to the bending moment.
+        zeros = np.zeros_like(samples, dtype=float)
+        return {
+            "x": samples,
+            "qx": zeros.copy(),
+            "qy": zeros.copy(),
+            "axial": zeros.copy(),
+            "shear": zeros.copy(),
+            "moment": -float(load.mz) * samples,
+            "point_events": [],
+        }
     if load.kind == "point_global":
         if load.ratio is None:
             raise SolverError(f"Point load on element {load.element} has no position ratio.")
