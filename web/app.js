@@ -266,6 +266,7 @@ const state = {
   entitlements: null,
   result: null,
   expansion: {},
+  scopeElements: null,
   lastProject: null,
   lastScope: "whole",
   projectMetadata: { name: "canvas_project" },
@@ -1673,6 +1674,7 @@ function buildProject(options = {}) {
     },
   };
   Object.defineProperty(project, "expansion", { value: expanded.expansion, enumerable: false });
+  Object.defineProperty(project, "scopeElements", { value: model.scopeElements, enumerable: false });
   return project;
 }
 
@@ -1701,14 +1703,24 @@ function projectNodalLoads(model) {
 }
 
 function scopedModel(scope) {
-  if (scope !== "selection") {
-    return {
-      nodes: state.nodes,
-      elements: state.elements,
-      loads: state.loads,
-      elementLoads: state.elementLoads,
-    };
-  }
+  // The whole structure is always solved: cutting the selection out would
+  // usually leave it under-restrained. "选中隔离体" only filters the result
+  // view to the selected members, whose end forces are the cut forces.
+  const model = {
+    nodes: state.nodes,
+    elements: state.elements,
+    loads: state.loads,
+    elementLoads: state.elementLoads,
+    scopeElements: null,
+  };
+  if (scope !== "selection") return model;
+  const elementIds = selectionElementIds();
+  if (!elementIds.size) throw new Error("选中隔离体至少需要包含一根杆件。");
+  model.scopeElements = elementIds;
+  return model;
+}
+
+function selectionElementIds() {
   const elementIds = new Set(state.selection.elements);
   const nodeIds = new Set(state.selection.nodes);
   if (state.selected) {
@@ -1718,21 +1730,22 @@ function scopedModel(scope) {
   for (const element of state.elements) {
     if (nodeIds.has(element.node_i) && nodeIds.has(element.node_j)) elementIds.add(element.id);
   }
+  return elementIds;
+}
+
+function scopeNodeIds(scopeElements) {
+  const nodeIds = new Set();
   for (const element of state.elements) {
-    if (elementIds.has(element.id)) {
+    if (scopeElements.has(element.id)) {
       nodeIds.add(element.node_i);
       nodeIds.add(element.node_j);
     }
   }
-  const nodes = state.nodes.filter((node) => nodeIds.has(node.id));
-  const elements = state.elements.filter((element) => elementIds.has(element.id));
-  if (!elements.length) throw new Error("选中隔离体至少需要包含一根杆件。");
-  return {
-    nodes,
-    elements,
-    loads: state.loads.filter((load) => (load.node ? nodeIds.has(load.node) : elementIds.has(load.element))),
-    elementLoads: state.elementLoads.filter((load) => elementIds.has(load.element)),
-  };
+  return nodeIds;
+}
+
+function inScope(elementId) {
+  return !state.scopeElements || state.scopeElements.has(elementId);
 }
 
 function importProject(rawProject) {
@@ -2320,6 +2333,7 @@ async function solveProject(scope = "whole") {
     if (!response.ok) throw new Error(translateSolverError(payload.error || "求解失败。"));
     state.result = GeometryDiscretize.mergeResult(payload, project.expansion);
     state.expansion = project.expansion || {};
+    state.scopeElements = project.scopeElements || null;
     state.lastProject = project;
     state.lastScope = scope;
     els.resultText.textContent = formatResult(state.result, project, scope);
@@ -2328,6 +2342,7 @@ async function solveProject(scope = "whole") {
     draw();
   } catch (error) {
     state.result = null;
+    state.scopeElements = null;
     els.resultText.textContent = String(error.message || error);
     showToast(String(error.message || error));
     draw();
@@ -2346,13 +2361,24 @@ function applySolveDisplayOptions() {
 function formatResult(payload, project, scope) {
   const summary = payload.summary || {};
   const optionLabels = state.solveOptions.map((option) => solveOptionLabel(option));
+  const scopeElements = project.scopeElements || null;
+  const scopeNodes = scopeElements ? scopeNodeIds(scopeElements) : null;
+  const elementInScope = (id) => !scopeElements || scopeElements.has(id);
+  const nodeInScope = (id) => !scopeNodes || scopeNodes.has(id);
   const lines = [
     "求解结果",
-    `求解范围：${scope === "selection" ? "选中隔离体" : "整体模型"}`,
+    `求解范围：${scope === "selection" ? "选中隔离体（结果视图）" : "整体模型"}`,
     `求解内容：${optionLabels.join("、") || "未指定"}`,
     `体系判断：${systemJudgementText(payload)}`,
     "",
   ];
+  if (scopeElements) {
+    const ids = [...scopeElements].sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
+    lines.push("隔离体说明");
+    lines.push(`- 模型始终整体求解；下列结果只显示所选杆件 ${ids.join("、")} 及其端节点。`);
+    lines.push("- 杆端内力 Ni/Vi/Mi、Nj/Vj/Mj 即隔离体切口处的内力（节点作用在杆端上的力），内力图、极值和危险截面同样只统计所选杆件。");
+    lines.push("");
+  }
 
   const discretised = discretisationLines(project.expansion);
   if (discretised.length) {
@@ -2366,6 +2392,7 @@ function formatResult(payload, project, scope) {
   if (state.solveOptions.includes("displacement")) {
     lines.push("节点位移与转角");
     for (const [nodeId, values] of sortedEntries(payload.displacements || {})) {
+      if (!nodeInScope(nodeId)) continue;
       lines.push(
         `- ${nodeId}: ux=${formatSigned(values.ux * 1000)} mm，uy=${formatSigned(values.uy * 1000)} mm，θ=${formatSigned(values.rz)} rad`
       );
@@ -2375,8 +2402,8 @@ function formatResult(payload, project, scope) {
 
   if (state.solveOptions.includes("reaction")) {
     lines.push("支座反力");
-    const reactions = sortedEntries(payload.reactions || {});
-    if (!reactions.length) lines.push("- 未形成支座反力。");
+    const reactions = sortedEntries(payload.reactions || {}).filter(([nodeId]) => nodeInScope(nodeId));
+    if (!reactions.length) lines.push(scopeElements ? "- 所选隔离体内没有支座节点。" : "- 未形成支座反力。");
     for (const [nodeId, values] of reactions) {
       let text = `- ${nodeId}: Fx=${formatSigned((values.fx || 0) / 1000)} kN，Fy=${formatSigned((values.fy || 0) / 1000)} kN，Mz=${formatSigned(
         (values.mz || 0) / 1000
@@ -2395,8 +2422,9 @@ function formatResult(payload, project, scope) {
   }
 
   if (state.solveOptions.includes("internal")) {
-    lines.push("杆端内力");
+    lines.push(scopeElements ? "杆端内力（隔离体切口内力）" : "杆端内力");
     for (const [elementId, values] of sortedEntries(payload.element_end_forces || {})) {
+      if (!elementInScope(elementId)) continue;
       lines.push(
         `- ${elementId}: Ni=${formatSigned(values.n_i / 1000)} kN，Vi=${formatSigned(values.v_i / 1000)} kN，Mi=${formatSigned(
           values.m_i / 1000
@@ -2415,7 +2443,7 @@ function formatResult(payload, project, scope) {
   if (extrema.length) {
     lines.push("内力图极值");
     for (const [label, component, scale, unit] of extrema) {
-      const item = resultExtrema(payload, component, scale);
+      const item = resultExtrema(payload, component, scale, elementInScope);
       if (!item) continue;
       lines.push(
         `- ${label}: 最大 ${formatSigned(item.max.value)} ${unit}（${item.max.element}, x=${formatNumber(item.max.x)} m），最小 ${formatSigned(
@@ -2427,12 +2455,13 @@ function formatResult(payload, project, scope) {
   }
 
   if (state.solveOptions.includes("stress") || state.solveOptions.includes("strain") || state.solveOptions.includes("stress_strain")) {
-    appendStressStrainSummary(lines, payload, project);
+    appendStressStrainSummary(lines, payload, project, elementInScope);
   }
 
-  if (state.solveOptions.includes("danger") && (summary.dangerous_sections || []).length) {
+  const dangerousSections = (summary.dangerous_sections || []).filter((item) => elementInScope(item.element));
+  if (state.solveOptions.includes("danger") && dangerousSections.length) {
     lines.push("危险截面");
-    for (const item of summary.dangerous_sections.slice(0, 3)) {
+    for (const item of dangerousSections.slice(0, 3)) {
       lines.push(`- ${item.element}: x=${formatNumber(item.x)} m，|M|=${formatSigned(Math.abs(item.moment) / 1000)} kN·m`);
     }
     lines.push("");
@@ -2440,7 +2469,7 @@ function formatResult(payload, project, scope) {
 
   if (state.solveOptions.includes("flexibility")) {
     lines.push("柔度");
-    const flexibility = summary.load_point_flexibility || [];
+    const flexibility = (summary.load_point_flexibility || []).filter((item) => nodeInScope(item.node));
     if (!flexibility.length) lines.push("- 当前荷载点没有可计算的柔度结果。");
     for (const item of flexibility) {
       const unit = item.kind === "rotation" ? "rad/(N·m)" : "m/N";
@@ -2550,9 +2579,10 @@ function formatSigned(value, digits = 4) {
   return formatNumber(value, digits);
 }
 
-function resultExtrema(payload, component, scale = 1) {
+function resultExtrema(payload, component, scale = 1, include = () => true) {
   const points = [];
   for (const [elementId, rows] of sortedEntries(payload.element_diagrams || {})) {
+    if (!include(elementId)) continue;
     for (const row of rows || []) {
       points.push({ element: elementId, x: Number(row.x || 0), value: Number(row[component] || 0) * scale });
     }
@@ -2564,9 +2594,10 @@ function resultExtrema(payload, component, scale = 1) {
   };
 }
 
-function appendStressStrainSummary(lines, payload, project) {
+function appendStressStrainSummary(lines, payload, project, include = () => true) {
   const values = [];
   for (const [elementId, rows] of sortedEntries(payload.element_diagrams || {})) {
+    if (!include(elementId)) continue;
     for (const row of rows || []) {
       const stress = stressAtProjectRow(row, project);
       values.push({
@@ -4945,6 +4976,7 @@ function chartData(component) {
   const data = [];
   let offset = 0;
   for (const element of state.elements) {
+    if (!inScope(element.id)) continue;
     const rows = diagrams[element.id] || [];
     if (!rows.length) continue;
     const elementLength = rows[rows.length - 1].x || elementLengthFromModel(element);
