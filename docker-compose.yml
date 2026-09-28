@@ -1,0 +1,44 @@
+# Computational Mechanics Solver on the same host as LeoMath. The web container is
+# published on loopback only; nginx on the host terminates TLS for cms.leomath.cn
+# and proxies to 127.0.0.1:8765. Accounts live in the bundled Postgres, project
+# files and avatars in the cms-data volume.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cms
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: cms
+    volumes:
+      - cms-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cms -d cms"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_DIRTY: "false"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CMS_ENV: production
+      CMS_AUTH_SECRET: ${CMS_AUTH_SECRET:?set a random 64-hex secret in .env}
+      CMS_DATABASE_URL: postgresql://cms:${POSTGRES_PASSWORD}@db:5432/cms
+      CMS_DATA_DIR: /var/lib/cms
+      CMS_COOKIE_SECURE: "true"
+    volumes:
+      - cms-data:/var/lib/cms
+    ports:
+      - "127.0.0.1:${CMS_PORT:-8765}:8765"
+
+volumes:
+  cms-pgdata:
+  cms-data:
