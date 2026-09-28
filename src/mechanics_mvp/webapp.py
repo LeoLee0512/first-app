@@ -30,13 +30,6 @@ from .auth_http import (
     session_view_payload,
 )
 from .engine import solve_with_backend
-from .entitlements import (
-    EntitlementError,
-    EntitlementService,
-    create_entitlement_service,
-    entitlement_error_payload,
-    entitlement_view_payload,
-)
 from .project_io import project_from_dict
 from .report import build_report_pdf, build_text_report_pdf
 from .version import __version__
@@ -174,10 +167,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             self._handle_auth_session()
             return
 
-        if request_path == "/api/entitlements":
-            self._handle_entitlement_view()
-            return
-
         if request_path.startswith("/api/avatars/"):
             self._serve_avatar(request_path.removeprefix("/api/avatars/"))
             return
@@ -212,14 +201,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             self._handle_auth_mutation("POST", request_path)
             return
 
-        if request_path in {
-            "/api/entitlements/internal/redeem",
-            "/api/entitlements/internal/revoke",
-            "/api/pinn/waitlist",
-        }:
-            self._handle_entitlement_mutation(request_path)
-            return
-
         if request_path not in {"/api/solve", "/api/report", "/api/dynamics-report"}:
             self.send_error(404, "Not found")
             return
@@ -239,11 +220,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            if request_path in {"/api/report", "/api/dynamics-report"}:
-                required_entitlement = self._report_entitlement(payload)
-                if required_entitlement:
-                    user = self._auth_service().authenticated_user(read_session_cookie(self.headers))
-                    self._entitlement_service().require(user.id, required_entitlement)
             if request_path == "/api/dynamics-report":
                 self._send_bytes(
                     dynamics_report_payload(payload),
@@ -259,12 +235,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
                 )
                 return
             response = solve_project_payload(payload)
-        except AuthError as error:
-            self._send_auth_error(error)
-            return
-        except EntitlementError as error:
-            self._send_entitlement_error(error)
-            return
         except Exception as exc:  # noqa: BLE001 - user-facing API boundary.
             self._send_json({"error": str(exc)}, status=422)
             return
@@ -370,62 +340,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
         except Exception:  # noqa: BLE001 - do not expose backend details or secrets.
             self._send_auth_internal_error()
 
-    def _handle_entitlement_view(self) -> None:
-        try:
-            auth_service = self._auth_service()
-            user = auth_service.authenticated_user(read_session_cookie(self.headers))
-            view = self._entitlement_service().view_for_user(user.id)
-            refreshed_user = auth_service.authenticated_user(read_session_cookie(self.headers))
-            payload = entitlement_view_payload(view)
-            payload["user"] = public_user_payload(refreshed_user)
-            self._send_json(payload)
-        except AuthError as error:
-            self._send_auth_error(error)
-        except EntitlementError as error:
-            self._send_entitlement_error(error)
-        except Exception:  # noqa: BLE001 - do not expose backend details.
-            self._send_auth_internal_error()
-
-    def _handle_entitlement_mutation(self, request_path: str) -> None:
-        try:
-            require_same_origin(self.headers)
-            auth_service = self._auth_service()
-            session_token = read_session_cookie(self.headers)
-            csrf_token = str(self.headers.get("X-CSRF-Token", ""))
-            user = auth_service.authorized_user(session_token, csrf_token)
-            service = self._entitlement_service()
-            payload = self._read_json_body(allow_empty=True)
-
-            if request_path == "/api/entitlements/internal/redeem":
-                view = service.redeem_internal_access(
-                    user_id=user.id,
-                    invite_code=str(payload.get("inviteCode", "")),
-                    remote_address=(
-                        str(self.client_address[0]) if self.client_address else "unknown"
-                    ),
-                )
-            elif request_path == "/api/entitlements/internal/revoke":
-                view = service.revoke_internal_access(
-                    actor_user_id=user.id,
-                    target_user_id=str(payload.get("targetUserId", "")),
-                )
-            elif request_path == "/api/pinn/waitlist":
-                view = service.join_pinn_waitlist(user.id)
-            else:
-                self.send_error(404, "Not found")
-                return
-
-            refreshed_user = auth_service.authenticated_user(session_token)
-            response = entitlement_view_payload(view)
-            response["user"] = public_user_payload(refreshed_user)
-            self._send_json(response)
-        except AuthError as error:
-            self._send_auth_error(error)
-        except EntitlementError as error:
-            self._send_entitlement_error(error)
-        except Exception:  # noqa: BLE001 - do not expose backend details or credentials.
-            self._send_auth_internal_error()
-
     def _serve_avatar(self, encoded_name: str) -> None:
         try:
             name = unquote(encoded_name, errors="strict")
@@ -461,26 +375,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
 
     def _auth_cookie_secure(self) -> bool:
         return bool(getattr(self.server, "auth_cookie_secure", False))
-
-    def _entitlement_service(self) -> EntitlementService:
-        service = getattr(self.server, "entitlement_service", None)
-        if not isinstance(service, EntitlementService):
-            raise RuntimeError("Entitlement service is unavailable.")
-        return service
-
-    @staticmethod
-    def _report_entitlement(payload: dict[str, Any]) -> str | None:
-        options = payload.get("report_options", [])
-        if isinstance(options, str):
-            options = [item.strip() for item in options.split(",")]
-        if not isinstance(options, list):
-            return None
-        normalized = {str(item).strip().casefold() for item in options}
-        if normalized.intersection({"formal", "professional", "pro_report"}):
-            return "report.formal"
-        if normalized.intersection({"advanced", "advanced_export"}):
-            return "export.advanced"
-        return None
 
     def _read_json_body(self, *, allow_empty: bool = False) -> dict[str, Any]:
         body = self._read_body(JSON_BODY_LIMIT)
@@ -544,16 +438,6 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
         if error.retry_after is not None:
             headers["Retry-After"] = str(error.retry_after)
         self._send_json(error_payload(error), status=error.status, headers=headers)
-
-    def _send_entitlement_error(self, error: EntitlementError) -> None:
-        headers: dict[str, str] = {}
-        if error.retry_after is not None:
-            headers["Retry-After"] = str(error.retry_after)
-        self._send_json(
-            entitlement_error_payload(error),
-            status=error.status,
-            headers=headers,
-        )
 
     def _send_auth_internal_error(self) -> None:
         self._send_json(
@@ -648,14 +532,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     auth_service, auth_cookie_secure = create_auth_service(PROJECT_ROOT)
-    entitlement_service = create_entitlement_service(
-        auth_service.database,
-        auth_service.config.audit_secret,
-    )
     server = ThreadingHTTPServer((args.host, args.port), MechanicsWebHandler)
     server.auth_service = auth_service
     server.auth_cookie_secure = auth_cookie_secure
-    server.entitlement_service = entitlement_service
     print(f"Mechanics MVP web app: http://{args.host}:{args.port}")
     try:
         server.serve_forever()

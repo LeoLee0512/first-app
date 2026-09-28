@@ -72,13 +72,23 @@ class AuthServiceTests(unittest.TestCase):
                 "users",
                 "sessions",
                 "roles",
-                "entitlements",
-                "subscription_plans",
-                "user_entitlements",
                 "login_attempts",
                 "schema_migrations",
             }.issubset(names)
         )
+        # v1.5.1 dropped the membership tables; no plan, entitlement or invite data remains.
+        self.assertTrue(
+            {
+                "entitlements",
+                "subscription_plans",
+                "user_entitlements",
+                "role_entitlements",
+                "internal_access_grants",
+                "pinn_waitlist",
+            }.isdisjoint(names)
+        )
+        role_names = {row["name"] for row in self.database.fetch_all("SELECT name FROM roles")}
+        self.assertEqual(role_names, {"free", "admin"})
 
     def test_registration_hashes_password_and_issues_revocable_session(self) -> None:
         issued = self._register()

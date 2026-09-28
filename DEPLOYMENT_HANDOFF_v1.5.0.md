@@ -15,8 +15,7 @@
 - `CMS_DATABASE_URL`：生产 PostgreSQL URL，禁止写入仓库。
 - `CMS_DATA_DIR`：持久化工程数据目录。
 - `CMS_COOKIE_SECURE=true`，并只通过 HTTPS 暴露服务。
-- `CMS_INTERNAL_INVITE_CODE`：可选的独立随机秘密；不用时不设置。
-- `CMS_INTERNAL_INVITE_TTL_DAYS`、`CMS_INTERNAL_INVITE_USER_LIMIT`、`CMS_INTERNAL_INVITE_ADDRESS_LIMIT`：按批准范围设置有效期、用户数和地址尝试上限。
+- `CMS_INTERNAL_INVITE_*`：v1.5.1 起已删除，不再读取；旧部署中可直接移除。
 - `MECHANICS_GIT_COMMIT`、`MECHANICS_GIT_DIRTY=false`：构建时注入真实提交状态。
 
 ## 候选验证
@@ -24,7 +23,7 @@
 1. 使用独立候选容器、独立候选数据库和独立数据目录，绑定未占用的内部端口。
 2. 启动会自动执行 `src/mechanics_mvp/migrations/` 中缺失迁移；核对 `schema_migrations` 后再继续。
 3. 健康检查至少覆盖 `/`、`/api/version` 与历史 PDF 下载，并确认 API 返回版本 1.5.0 和目标提交。
-4. 验证注册、登录、退出、Cookie Secure、会话撤销、Plus/Pro 门控和 Internal Tester 非管理员权限。
+4. 验证注册、登录、退出、Cookie Secure 和会话撤销；确认 `/api/entitlements` 返回 404。
 5. 验证静力学、动力学、碰撞、轨道、变化场及旧工程迁移。
 
 ## 备份、切换与回滚

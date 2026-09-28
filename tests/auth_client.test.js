@@ -42,34 +42,6 @@ function response(status, payload, headers = {}) {
         return response(200, { user: { ...sessionPayload.user, displayName: "新昵称" } });
       }
       if (path === "/api/auth/logout") return response(200, { ok: true });
-      if (path === "/api/entitlements") {
-        return response(200, {
-          role: "free",
-          label: "Free",
-          entitlements: ["report.basic"],
-          plans: [],
-          user: sessionPayload.user,
-        });
-      }
-      if (path === "/api/entitlements/internal/redeem") {
-        return response(200, {
-          role: "internal_tester",
-          label: "Internal Tester",
-          entitlements: ["preview.internal"],
-          plans: [],
-          user: { ...sessionPayload.user, role: "internal_tester" },
-        });
-      }
-      if (path === "/api/pinn/waitlist") {
-        return response(200, {
-          role: "internal_tester",
-          label: "Internal Tester",
-          entitlements: ["pinn.waitlist"],
-          pinnStatus: "waiting",
-          plans: [],
-          user: { ...sessionPayload.user, role: "internal_tester" },
-        });
-      }
       return response(500, { error: { code: "UNEXPECTED", message: "unexpected" } });
     },
   });
@@ -95,17 +67,6 @@ function response(status, payload, headers = {}) {
   assert.equal(loggedOut.authenticated, false);
   assert.equal(calls[3].options.headers["X-CSRF-Token"], "csrf-token-value");
 
-  await client.register({ username: "student01", password: "secret" });
-  const entitlementView = await client.entitlements();
-  assert.equal(entitlementView.label, "Free");
-  const internalView = await client.redeemInternal("test-only-value");
-  assert.equal(internalView.label, "Internal Tester");
-  assert.equal(calls[6].options.headers["X-CSRF-Token"], "csrf-token-value");
-  assert.equal(JSON.parse(calls[6].options.body).inviteCode, "test-only-value");
-  const waitlistView = await client.joinPinnWaitlist();
-  assert.equal(waitlistView.pinnStatus, "waiting");
-  assert.equal(calls[7].options.headers["X-CSRF-Token"], "csrf-token-value");
-
   const failingClient = create({
     fetchImpl: async () => response(401, {
       error: { code: "AUTH_INVALID_CREDENTIALS", message: "用户名或密码错误。" },
@@ -119,7 +80,7 @@ function response(status, payload, headers = {}) {
       error.status === 401
   );
 
-  console.log("auth-client: 20 checks passed");
+  console.log("auth-client: 12 checks passed");
 })().catch((error) => {
   console.error(error);
   process.exitCode = 1;

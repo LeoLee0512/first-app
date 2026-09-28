@@ -161,41 +161,6 @@
         current.user = { ...payload.user };
         return snapshot();
       },
-
-      async entitlements() {
-        const payload = await request("/api/entitlements");
-        if (payload.user) current.user = { ...payload.user };
-        return payload;
-      },
-
-      async redeemInternal(inviteCode) {
-        const payload = await request("/api/entitlements/internal/redeem", {
-          method: "POST",
-          json: { inviteCode },
-          csrf: true,
-        });
-        if (payload.user) current.user = { ...payload.user };
-        return payload;
-      },
-
-      async revokeInternal(targetUserId) {
-        const payload = await request("/api/entitlements/internal/revoke", {
-          method: "POST",
-          json: { targetUserId },
-          csrf: true,
-        });
-        return payload;
-      },
-
-      async joinPinnWaitlist() {
-        const payload = await request("/api/pinn/waitlist", {
-          method: "POST",
-          json: {},
-          csrf: true,
-        });
-        if (payload.user) current.user = { ...payload.user };
-        return payload;
-      },
     };
   }
 

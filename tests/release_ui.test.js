@@ -18,14 +18,14 @@ function check(callback) {
 }
 
 check(() => {
-  assert.match(html, /<title>Computational Mechanics Solver v1\.5\.0<\/title>/);
-  assert.match(html, /id="releaseVersion"[^>]*class="[^"]*rainbow-animated[^"]*"[^>]*>v1\.5\.0</);
+  assert.match(html, /<title>Computational Mechanics Solver v1\.5\.1<\/title>/);
+  assert.match(html, /id="releaseVersion"[^>]*class="[^"]*rainbow-animated[^"]*"[^>]*>v1\.5\.1</);
   assert.match(css, /\.rainbow-animated\s*\{[^}]*animation:\s*rainbowFlow/s);
 });
 
 check(() => {
   assert.match(html, /id="announcementButton"/);
-  assert.match(html, /aria-label="查看 v1\.5\.0 更新公告"/);
+  assert.match(html, /aria-label="查看 v1\.5\.1 更新公告"/);
   assert.match(html, /aria-controls="announcementDialog"/);
   assert.match(html, /class="li-atom"/);
   assert.match(css, /@keyframes atomOrbit/);
@@ -33,7 +33,7 @@ check(() => {
 
 check(() => {
   assert.match(html, /id="announcementDialog"[^>]*aria-labelledby="announcementTitle"/);
-  assert.match(html, /Computational Mechanics Solver v1\.5\.0 更新公告/);
+  assert.match(html, /Computational Mechanics Solver v1\.5\.1 更新公告/);
   assert.match(html, /同步二维动力学世界/);
   assert.match(html, /圆—圆、圆—地面接触/);
   assert.match(html, /受控 AST 与白名单求值/);
@@ -76,16 +76,14 @@ check(() => {
 });
 
 check(() => {
-  assert.match(html, /Free、Plus、Pro/);
-  assert.match(html, /Plus\/Pro 暂不提供购买/);
-  assert.match(html, /<h3>Internal Tester<\/h3>/);
+  // v1.5.1: no membership UI may remain anywhere in the shipped page.
+  assert.doesNotMatch(html, /Plus\/Pro|Pro 用户|Internal Tester|获得更多权益|internalLoginEntry|等待名单|entitlement/);
   assert.match(html, /PINN 求解器（开发中）/);
-  assert.match(html, /加入等待名单不会开启 PINN 求解能力/);
+  assert.match(html, /移除套餐、权益门控与内部测试通道/);
 });
 
 check(() => {
-  assert.doesNotMatch(html, /当前主身份/);
-  assert.match(html, /当前身份/);
+  assert.doesNotMatch(html, /当前主身份|当前身份/);
   assert.match(css, /\.manual-cube-icon \.edge-1/);
   assert.match(css, /\.manual-cube-icon \.edge-9/);
 });

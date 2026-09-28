@@ -1,6 +1,6 @@
 # Computational Mechanics Solver
 
-当前版本：**v1.5.0**
+当前版本：**v1.5.1**
 
 Computational Mechanics Solver 是一个带浏览器建模界面的二维静力学与动力学求解器。Python 服务端负责账户、权限、静力学求解、报告和文件下载；动力学数值核心在浏览器中以纯数值模块运行。
 
@@ -31,13 +31,11 @@ Computational Mechanics Solver 是一个带浏览器建模界面的二维静力�
 - 重力、电场和二维垂直磁场的常量、时间、空间与时间—空间表达式；表达式使用受控 AST，不执行用户代码。
 - 动力学工程 Schema 为 `cms-dynamics-project@2`，保留从 `@1` 的迁移。
 
-### 账户与权益
+### 账户
 
 - 服务器账户、Argon2id 密码、可撤销会话、CSRF/同源检查、登录限速和安全头像存储。
-- Free、Plus、Pro、Internal Tester、Admin 服务端权益矩阵。
-- Plus/Pro 当前只展示，购买尚未开放。
-- Internal Tester 不继承 Admin；内测码只允许通过 `CMS_INTERNAL_INVITE_CODE` 环境变量设置。
-- PINN 求解器仍为**开发中**；加入等待名单不会启用求解能力。
+- 所有账户拥有相同的求解与报告能力；只有 `admin` 角色单独标识。v1.5.1 起不再有套餐、权益门控、充值或内部测试通道。
+- PINN 求解器仍为**开发中**，界面中保持禁用。
 
 ## 历史说明书
 

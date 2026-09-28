@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Computational Mechanics Solver v1.5.0</title>
+    <title>Computational Mechanics Solver v1.5.1</title>
     <link rel="icon" href="/static/brand-avatar.png" type="image/png">
     <link rel="stylesheet" href="/static/app.css">
   </head>
@@ -13,7 +13,7 @@
         id="announcementButton"
         class="announcement-trigger"
         type="button"
-        aria-label="查看 v1.5.0 更新公告"
+        aria-label="查看 v1.5.1 更新公告"
         aria-haspopup="dialog"
         aria-controls="announcementDialog"
       >
@@ -30,7 +30,7 @@
           <span>欢迎使用</span>
           <span>Computational Mechanics Solver</span>
         </h1>
-        <p id="releaseVersion" class="welcome-version rainbow-animated">v1.5.0</p>
+        <p id="releaseVersion" class="welcome-version rainbow-animated">v1.5.1</p>
         <p class="welcome-subtitle studio-credit">Leo <span class="li-ion">Li<sup>+</sup></span> Studio出品</p>
         <p class="welcome-contact">
           如有任何错误、bug、请联系：620026600@qq.com 或202402040108@stu.bucea.edu.cn
@@ -57,7 +57,6 @@
               <input id="loginPassword" type="password" autocomplete="current-password" maxlength="128" required>
             </label>
             <button id="loginSubmit" class="auth-action" type="button">登录</button>
-            <button id="internalLoginEntry" class="auth-secondary" type="button">内部测试通道</button>
           </section>
 
           <section id="registerCard" class="auth-card hidden">
@@ -155,7 +154,6 @@
           <span id="mainUserAvatar" class="default-avatar main-avatar">CM</span>
           <span id="mainUserName" class="main-user-name">未登录</span>
           <span id="mainUserTier" class="user-tier hidden"></span>
-          <button id="benefitsButton" class="benefits-button" type="button">获得更多权益</button>
           <button id="settingsButton" class="settings-button" title="设置">设置</button>
         </div>
 
@@ -321,7 +319,6 @@
           <span id="dynamicsUserAvatar" class="default-avatar main-avatar">CM</span>
           <span id="dynamicsUserName" class="main-user-name">未登录</span>
           <span id="dynamicsUserTier" class="user-tier hidden"></span>
-          <button id="dynamicsBenefitsButton" class="benefits-button" type="button">获得更多权益</button>
           <button id="dynamicsSettingsButton" class="settings-button" title="设置">设置</button>
         </div>
 
@@ -499,7 +496,7 @@
         <header class="modal-header">
           <div>
             <p class="announcement-kicker">Leo Li<sup>+</sup> Studio Release Notes</p>
-            <h2 id="announcementTitle">Computational Mechanics Solver v1.5.0 更新公告</h2>
+            <h2 id="announcementTitle">Computational Mechanics Solver v1.5.1 更新公告</h2>
           </div>
           <button id="announcementCloseButton" value="close" class="icon-button" aria-label="关闭更新公告">×</button>
         </header>
@@ -524,19 +521,18 @@
             </ul>
           </section>
           <section>
-            <h3>工程、界面与账户权益</h3>
+            <h3>工程、界面与账户</h3>
             <ul>
               <li>动力学工程升级到 <code>cms-dynamics-project@2</code>，打开 v1 工程时自动迁移，旧力与冲量默认作用于质心。</li>
               <li>保存、打开和撤销会保留角状态、接触材料、作用点、地面、轨道、约束和变化场。</li>
               <li>报告新增角运动、接触和轨道信息，并提供碰撞、轨道滚动、变化场三个 v1.5 示例。</li>
-              <li>账户与 Free、Plus、Pro、Internal Tester、Admin 权益改由服务器管理；Internal Tester 不继承 Admin。</li>
-              <li>Plus/Pro 暂不提供购买，PINN 仍为等待名单且不会解锁求解器。</li>
+              <li>账户由服务器管理。v1.5.1 起移除套餐、权益门控与内部测试通道：所有账户拥有相同的求解与报告能力；PINN 求解器仍在开发中。</li>
             </ul>
           </section>
           <section>
             <h3>验证与发布状态</h3>
             <p>Python、JavaScript、数据库、HTTP、安全和物理验证均已通过发布前回归。当前仓库已统一为 v1.5.0，但本次清理不会自动推送 GitHub，也不会连接或更新云端正式服务。</p>
-            <p>v1.5.0 新功能请参考本更新公告和 <code>RELEASE_NOTES_v1.5.0.md</code>。《Computational Mechanics Solver v1.3.2 用户与技术说明书》仅作为历史版本说明书继续提供下载，不完整覆盖云账户、权益、碰撞、刚体转动、约束轨道和变化场。</p>
+            <p>v1.5.0 新功能请参考本更新公告和 <code>RELEASE_NOTES_v1.5.0.md</code>。《Computational Mechanics Solver v1.3.2 用户与技术说明书》仅作为历史版本说明书继续提供下载，不完整覆盖云账户、碰撞、刚体转动、约束轨道和变化场。</p>
           </section>
           <aside class="announcement-limitations" aria-label="当前限制">
             <strong>当前限制</strong>
@@ -1037,52 +1033,6 @@
         <p id="settingsMessage" class="settings-message" role="status"></p>
         <footer class="modal-actions">
           <button id="logoutButton" type="button" class="danger-button">退出登录</button>
-          <button value="cancel" class="primary">完成</button>
-        </footer>
-      </form>
-    </dialog>
-
-    <dialog id="entitlementsDialog" class="modal entitlements-modal" aria-labelledby="entitlementsTitle">
-      <form method="dialog">
-        <header class="modal-header">
-          <div>
-            <p class="modal-kicker">ACCOUNT &amp; ACCESS</p>
-            <h2 id="entitlementsTitle">账户与权益</h2>
-          </div>
-          <button value="cancel" class="icon-button" title="关闭权益面板">×</button>
-        </header>
-        <div class="entitlements-content">
-          <section class="entitlement-current">
-            <span>当前身份</span>
-            <strong id="entitlementCurrentLabel">正在读取……</strong>
-            <p id="entitlementExpiry" class="entitlement-muted"></p>
-          </section>
-          <section>
-            <h3>套餐权益</h3>
-            <div id="entitlementPlanList" class="entitlement-plan-list" aria-live="polite"></div>
-          </section>
-          <section id="internalAccessSection" class="entitlement-action-section">
-            <h3>Internal Tester</h3>
-            <p>内部测试身份不包含管理员权限。凭据只提交到服务器，本页不会保存。</p>
-            <div class="entitlement-action-row">
-              <label class="wide-field">
-                <span>内部测试凭据</span>
-                <input id="internalInviteCode" type="password" autocomplete="off" maxlength="256">
-              </label>
-              <button id="redeemInternalButton" type="button">验证并启用</button>
-            </div>
-          </section>
-          <section class="entitlement-action-section">
-            <h3>PINN 求解器</h3>
-            <p>仍在开发与验证中。加入等待名单不会开启 PINN 求解能力。</p>
-            <div class="entitlement-action-row">
-              <span id="pinnWaitlistStatus" class="entitlement-muted">尚未加入等待名单</span>
-              <button id="joinPinnWaitlistButton" type="button">加入等待名单</button>
-            </div>
-          </section>
-        </div>
-        <p id="entitlementsMessage" class="settings-message" role="status"></p>
-        <footer class="modal-actions">
           <button value="cancel" class="primary">完成</button>
         </footer>
       </form>

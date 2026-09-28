@@ -27,7 +27,6 @@ const els = {
   loginUsername: document.getElementById("loginUsername"),
   loginPassword: document.getElementById("loginPassword"),
   loginSubmit: document.getElementById("loginSubmit"),
-  internalLoginEntry: document.getElementById("internalLoginEntry"),
   registerUsername: document.getElementById("registerUsername"),
   registerPassword: document.getElementById("registerPassword"),
   registerPasswordConfirm: document.getElementById("registerPasswordConfirm"),
@@ -47,12 +46,10 @@ const els = {
   mainUserAvatar: document.getElementById("mainUserAvatar"),
   mainUserName: document.getElementById("mainUserName"),
   mainUserTier: document.getElementById("mainUserTier"),
-  benefitsButton: document.getElementById("benefitsButton"),
   dynamicsShell: document.getElementById("dynamicsShell"),
   dynamicsUserAvatar: document.getElementById("dynamicsUserAvatar"),
   dynamicsUserName: document.getElementById("dynamicsUserName"),
   dynamicsUserTier: document.getElementById("dynamicsUserTier"),
-  dynamicsBenefitsButton: document.getElementById("dynamicsBenefitsButton"),
   dynamicsSettingsButton: document.getElementById("dynamicsSettingsButton"),
   dynamicsToStaticButton: document.getElementById("dynamicsToStaticButton"),
   dynamicsBuildKind: document.getElementById("dynamicsBuildKind"),
@@ -161,15 +158,6 @@ const els = {
   savePasswordButton: document.getElementById("savePasswordButton"),
   logoutButton: document.getElementById("logoutButton"),
   settingsMessage: document.getElementById("settingsMessage"),
-  entitlementsDialog: document.getElementById("entitlementsDialog"),
-  entitlementCurrentLabel: document.getElementById("entitlementCurrentLabel"),
-  entitlementExpiry: document.getElementById("entitlementExpiry"),
-  entitlementPlanList: document.getElementById("entitlementPlanList"),
-  internalInviteCode: document.getElementById("internalInviteCode"),
-  redeemInternalButton: document.getElementById("redeemInternalButton"),
-  pinnWaitlistStatus: document.getElementById("pinnWaitlistStatus"),
-  joinPinnWaitlistButton: document.getElementById("joinPinnWaitlistButton"),
-  entitlementsMessage: document.getElementById("entitlementsMessage"),
   toolButtons: [...document.querySelectorAll(".tool-button")],
   selectionMode: document.getElementById("selectionMode"),
   supportPreset: document.getElementById("supportPreset"),
@@ -263,7 +251,6 @@ const state = {
   pendingAvatar: "",
   pendingSettingsAvatar: "",
   currentUser: null,
-  entitlements: null,
   result: null,
   expansion: {},
   scopeElements: null,
@@ -332,11 +319,8 @@ const LEGACY_AUTH_CURRENT_KEY = "cms_current_user";
 const AUTH_FONT_SIZE_KEY = "cms_font_size";
 const DEFAULT_USER_AVATAR = "";
 const authClient = AuthClient.create();
+// Only the admin role is shown as a badge; every other account is a plain user.
 const USER_TIER_LABELS = {
-  free: "Free",
-  plus: "Plus",
-  pro: "Pro",
-  internal_tester: "Internal Tester",
   admin: "Admin",
 };
 let announcementReturnFocus = null;
@@ -410,14 +394,16 @@ function refreshTierDisplay(target, user) {
     return;
   }
   const role = String(user.role || "free");
-  target.textContent = state.entitlements?.label || USER_TIER_LABELS[role] || "Free";
+  const label = USER_TIER_LABELS[role];
+  if (!label) {
+    target.textContent = "";
+    target.removeAttribute("data-role");
+    target.classList.add("hidden");
+    return;
+  }
+  target.textContent = label;
   target.dataset.role = role;
   target.classList.remove("hidden");
-}
-
-function refreshAvatarRole(target, user) {
-  if (!target) return;
-  target.classList.toggle("internal-tester-avatar", user?.role === "internal_tester");
 }
 
 function refreshCurrentUserDisplay(user = state.currentUser) {
@@ -426,13 +412,11 @@ function refreshCurrentUserDisplay(user = state.currentUser) {
     els.mainUserName.title = "";
     showAvatar(els.mainUserAvatar, DEFAULT_USER_AVATAR);
     refreshTierDisplay(els.mainUserTier, null);
-    refreshAvatarRole(els.mainUserAvatar, null);
     if (els.dynamicsUserName && els.dynamicsUserAvatar) {
       els.dynamicsUserName.textContent = "未登录";
       els.dynamicsUserName.title = "";
       showAvatar(els.dynamicsUserAvatar, DEFAULT_USER_AVATAR);
       refreshTierDisplay(els.dynamicsUserTier, null);
-      refreshAvatarRole(els.dynamicsUserAvatar, null);
     }
     return;
   }
@@ -441,13 +425,11 @@ function refreshCurrentUserDisplay(user = state.currentUser) {
   els.mainUserName.title = user.displayName ? `${user.displayName} (${user.username})` : user.username;
   showAvatar(els.mainUserAvatar, userAvatar(user));
   refreshTierDisplay(els.mainUserTier, user);
-  refreshAvatarRole(els.mainUserAvatar, user);
   if (els.dynamicsUserName && els.dynamicsUserAvatar) {
     els.dynamicsUserName.textContent = displayName;
     els.dynamicsUserName.title = user.displayName ? `${user.displayName} (${user.username})` : user.username;
     showAvatar(els.dynamicsUserAvatar, userAvatar(user));
     refreshTierDisplay(els.dynamicsUserTier, user);
-    refreshAvatarRole(els.dynamicsUserAvatar, user);
   }
 }
 
@@ -487,149 +469,6 @@ function authErrorMessage(error) {
   return "账户服务暂时不可用，请稍后再试。";
 }
 
-function setEntitlementsMessage(message) {
-  if (els.entitlementsMessage) els.entitlementsMessage.textContent = message || "";
-}
-
-function entitlementExpiryText(value) {
-  if (!value) return "";
-  const expiresAt = new Date(value);
-  if (Number.isNaN(expiresAt.getTime())) return "内部测试资格有效期由服务器管理。";
-  return `内部测试资格有效至 ${new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(expiresAt)}`;
-}
-
-function renderEntitlements() {
-  if (!els.entitlementPlanList) return;
-  const view = state.entitlements;
-  els.entitlementPlanList.replaceChildren();
-  els.entitlementCurrentLabel.textContent = view?.label || "正在读取……";
-  els.entitlementExpiry.textContent = entitlementExpiryText(view?.internalExpiresAt);
-
-  const plans = Array.isArray(view?.plans) ? view.plans : [];
-  if (!plans.length) {
-    const empty = document.createElement("p");
-    empty.className = "entitlement-muted";
-    empty.textContent = view ? "套餐信息暂不可用。" : "正在从服务器读取套餐信息……";
-    els.entitlementPlanList.appendChild(empty);
-  }
-  for (const plan of plans) {
-    const card = document.createElement("article");
-    card.className = "entitlement-plan";
-    if (plan.current) card.classList.add("current");
-
-    const title = document.createElement("h4");
-    title.textContent = plan.displayName || plan.name || "套餐";
-    const description = document.createElement("p");
-    description.textContent = plan.description || "权益以服务端当前配置为准。";
-    const status = document.createElement("span");
-    status.className = "entitlement-plan-status";
-    status.textContent = plan.current
-      ? "当前套餐"
-      : plan.purchaseAvailable
-        ? "可申请"
-        : "尚未开放购买";
-    card.append(title, description, status);
-    els.entitlementPlanList.appendChild(card);
-  }
-
-  const isInternal = view?.role === "internal_tester";
-  els.internalInviteCode.disabled = isInternal;
-  els.redeemInternalButton.disabled = isInternal;
-  els.redeemInternalButton.textContent = isInternal ? "已启用" : "验证并启用";
-
-  const waiting = view?.pinnStatus === "waiting";
-  els.pinnWaitlistStatus.textContent = waiting ? "已加入等待名单" : "尚未加入等待名单";
-  els.joinPinnWaitlistButton.disabled = waiting || !view;
-  els.joinPinnWaitlistButton.textContent = waiting ? "已加入" : "加入等待名单";
-}
-
-function applyEntitlementPayload(payload) {
-  if (!payload || typeof payload !== "object") return;
-  state.entitlements = {
-    role: String(payload.role || "free"),
-    label: String(payload.label || "Free"),
-    entitlements: Array.isArray(payload.entitlements) ? [...payload.entitlements] : [],
-    plans: Array.isArray(payload.plans) ? payload.plans.map((plan) => ({ ...plan })) : [],
-    internalExpiresAt: payload.internalExpiresAt || null,
-    pinnStatus: payload.pinnStatus || null,
-  };
-  if (payload.user && typeof payload.user === "object") {
-    state.currentUser = { ...payload.user };
-  }
-  refreshCurrentUserDisplay(state.currentUser);
-  renderEntitlements();
-}
-
-async function refreshEntitlements({ silent = true } = {}) {
-  const requestedUserId = state.currentUser?.id;
-  if (!requestedUserId) return null;
-  try {
-    const payload = await authClient.entitlements();
-    if (state.currentUser?.id !== requestedUserId) return null;
-    applyEntitlementPayload(payload);
-    return payload;
-  } catch (error) {
-    if (error instanceof AuthClient.AuthClientError && error.status === 401) {
-      completeLogout();
-      return null;
-    }
-    if (!silent) setEntitlementsMessage(authErrorMessage(error));
-    return null;
-  }
-}
-
-async function openEntitlementsDialog() {
-  if (!state.currentUser || !els.entitlementsDialog) return;
-  setEntitlementsMessage("正在从服务器读取当前权益……");
-  renderEntitlements();
-  if (!els.entitlementsDialog.open) els.entitlementsDialog.showModal();
-  const payload = await refreshEntitlements({ silent: false });
-  if (payload) setEntitlementsMessage("权益由服务器实时校验。Plus 与 Pro 购买暂未开放。");
-}
-
-async function redeemInternalAccess() {
-  let credential = els.internalInviteCode.value.trim();
-  els.internalInviteCode.value = "";
-  if (!credential) {
-    setEntitlementsMessage("请输入内部测试凭据。凭据不会保存在浏览器中。");
-    return;
-  }
-  setButtonBusy(els.redeemInternalButton, true, "验证中……");
-  setEntitlementsMessage("");
-  try {
-    const payload = await authClient.redeemInternal(credential);
-    applyEntitlementPayload(payload);
-    setEntitlementsMessage("Internal Tester 已启用；该身份不包含管理员权限。");
-  } catch (error) {
-    setEntitlementsMessage(authErrorMessage(error));
-  } finally {
-    credential = "";
-    setButtonBusy(els.redeemInternalButton, false);
-    renderEntitlements();
-  }
-}
-
-async function joinPinnWaitlist() {
-  setButtonBusy(els.joinPinnWaitlistButton, true, "提交中……");
-  setEntitlementsMessage("");
-  try {
-    const payload = await authClient.joinPinnWaitlist();
-    applyEntitlementPayload(payload);
-    setEntitlementsMessage("已加入 PINN 等待名单。PINN 求解能力仍在开发中，尚未启用。");
-  } catch (error) {
-    setEntitlementsMessage(authErrorMessage(error));
-  } finally {
-    setButtonBusy(els.joinPinnWaitlistButton, false);
-    renderEntitlements();
-  }
-}
-
 function showAuthMode(mode) {
   const isLogin = mode === "login";
   els.authPanel.classList.remove("hidden");
@@ -654,7 +493,6 @@ function resetAuthChoice() {
 }
 
 function setCurrentUser(user) {
-  state.entitlements = null;
   state.currentUser = user;
   els.authChoicePanel.classList.add("hidden");
   els.authPanel.classList.add("hidden");
@@ -665,7 +503,6 @@ function setCurrentUser(user) {
   if (els.moduleChoicePanel) els.moduleChoicePanel.classList.add("hidden");
   refreshCurrentUserDisplay(user);
   setAuthMessage(`已登录：${user.username}`);
-  void refreshEntitlements({ silent: true });
 }
 
 async function initAuth() {
@@ -871,10 +708,7 @@ async function savePassword() {
 function completeLogout() {
   cancelDynamicsFieldPlacement({ silent: true });
   state.currentUser = null;
-  state.entitlements = null;
   if (els.settingsDialog.open) els.settingsDialog.close();
-  if (els.entitlementsDialog?.open) els.entitlementsDialog.close();
-  if (els.internalInviteCode) els.internalInviteCode.value = "";
   els.appShell.classList.add("app-hidden");
   if (els.dynamicsShell) els.dynamicsShell.classList.add("app-hidden");
   els.welcomeScreen.classList.remove("hidden");
@@ -887,8 +721,6 @@ function completeLogout() {
   refreshCurrentUserDisplay(null);
   setAuthMessage("");
   setSettingsMessage("");
-  setEntitlementsMessage("");
-  renderEntitlements();
 }
 
 async function logoutUser() {
@@ -5360,11 +5192,6 @@ if (els.announcementDialog) {
   els.announcementDialog.addEventListener("close", restoreAnnouncementFocus);
 }
 els.showRegisterButton.addEventListener("click", () => showAuthMode("register"));
-if (els.internalLoginEntry) {
-  els.internalLoginEntry.addEventListener("click", () => {
-    setAuthMessage("请先登录，再通过“获得更多权益”进入内部测试通道。");
-  });
-}
 els.loginSubmit.addEventListener("click", loginUser);
 els.registerSubmit.addEventListener("click", registerUser);
 els.startAppButton.addEventListener("click", startApplication);
@@ -5373,24 +5200,6 @@ if (els.dynamicsModuleButton) els.dynamicsModuleButton.addEventListener("click",
 els.welcomeLogoutButton.addEventListener("click", logoutUser);
 els.settingsButton.addEventListener("click", openSettingsDialog);
 if (els.dynamicsSettingsButton) els.dynamicsSettingsButton.addEventListener("click", openSettingsDialog);
-if (els.benefitsButton) els.benefitsButton.addEventListener("click", openEntitlementsDialog);
-if (els.dynamicsBenefitsButton) {
-  els.dynamicsBenefitsButton.addEventListener("click", openEntitlementsDialog);
-}
-if (els.redeemInternalButton) {
-  els.redeemInternalButton.addEventListener("click", redeemInternalAccess);
-}
-if (els.joinPinnWaitlistButton) {
-  els.joinPinnWaitlistButton.addEventListener("click", joinPinnWaitlist);
-}
-if (els.internalInviteCode) {
-  els.internalInviteCode.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      redeemInternalAccess();
-    }
-  });
-}
 if (els.dynamicsToStaticButton) els.dynamicsToStaticButton.addEventListener("click", launchStaticApplication);
 if (els.staticToDynamicsButton) els.staticToDynamicsButton.addEventListener("click", launchDynamicsApplication);
 els.fontSizeSelect.addEventListener("change", () => applyFontSize(els.fontSizeSelect.value));
