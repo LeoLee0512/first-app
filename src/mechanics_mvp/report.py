@@ -54,6 +54,7 @@ DIAGNOSTIC_MESSAGES = {
     "likely_mechanism": "静定指数为负，模型可能为机构或约束不足。",
     "roughly_determinate": "静定指数为 0，拓扑估算可能为静定结构。",
     "roughly_indeterminate": "静定指数为正，拓扑估算可能为超静定结构。",
+    "index_ignores_hinges": "刚架公式 s = r + 3m − 3j 不计入桁架铰和弯矩释放，不能当作静定或超静定判断。",
 }
 
 REPORT_SECTION_HEADINGS = {
@@ -86,7 +87,7 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
 
     selected = [item for item in (options or []) if item in OPTION_LABELS]
     enabled = lambda name: not selected or name in selected
-    scope = "选中隔离体" if project.metadata.get("report_scope") == "selection" else "整体模型"
+    scope = _report_scope_label(project.metadata.get("report_scope"))
     project_name = project.metadata.get("name", "未命名工程")
     if project_name == "canvas_project":
         project_name = "当前画布工程"
@@ -584,10 +585,14 @@ def _append_diagnostics(lines: list[str], diagnostics: Any) -> None:
             f"- 单元数：{diagnostics.get('element_count', 0)}",
             f"- 约束自由度数：{diagnostics.get('restrained_dof_count', 0)}",
             f"- 自由自由度数：{diagnostics.get('free_dof_count', 0)}",
-            f"- 静定指数：{diagnostics.get('determinacy_index', 0)}",
         ]
     )
-    issues = diagnostics.get("issues", [])
+    issues = diagnostics.get("issues") or []
+    ignores_hinges = bool(diagnostics.get("index_ignores_hinges")) or any(
+        isinstance(issue, dict) and issue.get("code") == "index_ignores_hinges" for issue in issues
+    )
+    if not ignores_hinges:
+        lines.append(f"- 静定指数：{diagnostics.get('determinacy_index', 0)}")
     if not issues:
         lines.append("- 提示：未发现拓扑级诊断问题。")
     for issue in issues:
@@ -647,6 +652,14 @@ def _append_stress_strain(
             f"（{max_strain['element']}, x={_fmt(max_strain['x'])} m）"
         )
     lines.append("")
+
+
+def _report_scope_label(scope: object) -> str:
+    """Selection is a display filter after a whole-frame solve, not an isolated body."""
+
+    if str(scope or "") == "selection":
+        return "整体模型（求解整架；所选杆件只用于画面显示）"
+    return "整体模型"
 
 
 def _system_judgement(project: Project, result: AnalysisResult | None = None) -> str:

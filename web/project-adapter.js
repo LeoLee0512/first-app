@@ -28,5 +28,28 @@
     };
   }
 
-  return { ...ProjectSchema, solverElementType, solverElement };
+  /**
+   * Materials and sections used by a solve or a saved file.
+   * The toolbar edits the first entry. Every later entry, and the material
+   * or section id stored on each member, is kept.
+   */
+  function solveCatalog(input) {
+    const materials = JSON.parse(JSON.stringify(input.materials || []));
+    const sections = JSON.parse(JSON.stringify(input.sections || []));
+    const toolbar = input.toolbar || {};
+    const elastic = toolbar.E ?? "200 GPa";
+    const area = toolbar.A ?? "10000 mm^2";
+    const inertia = toolbar.I ?? "80000000 mm^4";
+    if (!materials.length) materials.push({ id: "steel", E: elastic, nu: 0.3 });
+    if (!sections.length) sections.push({ id: "default", A: area, I: inertia });
+    materials[0] = { ...materials[0], E: elastic };
+    sections[0] = { ...sections[0], A: area, I: inertia };
+    const elements = (input.elements || []).map((element) => ({
+      material: element.material || materials[0].id,
+      section: element.section || sections[0].id,
+    }));
+    return { materials, sections, elements };
+  }
+
+  return { ...ProjectSchema, solverElementType, solverElement, solveCatalog };
 });

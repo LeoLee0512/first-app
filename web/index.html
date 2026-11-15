@@ -247,7 +247,7 @@
               </label>
             </div>
             <p id="elementCapabilityNote" class="capability-note">
-              弧形、T 形、直角和任意形状当前用于建模显示；求解时按两端节点间的二维直梁柱单元处理。
+              弧形、直角和任意形状按绘制路径拆成直杆后求解。分布荷载沿该路径全长按线密度施加（总力等于密度乘路径长），箭头也沿这条路径，不是只作用在两端节点的连线上。T 形不拆分，仍按两端之间的一根直梁柱求解。
               高刚度近似杆通过放大轴向与弯曲刚度近似刚性杆件，结果可能受到条件数和刚度倍率影响。
             </p>
             <div class="field-row">
@@ -1074,6 +1074,7 @@
     <script src="/static/project-schema.js"></script>
     <script src="/static/project-adapter.js"></script>
     <script src="/static/geometry-discretize.js"></script>
+    <script src="/static/distributed-load.js"></script>
     <script src="/static/dynamics-field-geometry.js"></script>
     <script src="/static/dynamics-field-placement.js"></script>
     <script src="/static/dynamics-expression.js"></script>

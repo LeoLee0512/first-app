@@ -178,6 +178,13 @@
     return { qx: dir.c * gx + dir.s * gy, qy: -dir.s * gx + dir.c * gy };
   }
 
+  /** Chord-local line load at an arc-length ratio, as a global force per length. */
+  function globalDistributedIntensity(load, nodeI, nodeJ, ratio) {
+    const chord = direction(nodeI, nodeJ);
+    const clamped = Math.max(0, Math.min(1, Number(ratio) || 0));
+    return localToGlobal(chord, intensityAt(load, "x", clamped), intensityAt(load, "y", clamped));
+  }
+
   /** Intensity of a distributed load (N/m) along the chord-local axis at ratio. */
   function intensityAt(load, axis, ratio) {
     const key = axis === "x" ? "qx" : "qy";
@@ -422,5 +429,6 @@
     expandModel,
     mergeResult,
     segmentParent,
+    globalDistributedIntensity,
   };
 });

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from dataclasses import replace
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mechanics_mvp.auth import AuthConfig, AuthService
 from mechanics_mvp.database import Database
-from mechanics_mvp.webapp import MechanicsWebHandler
+from mechanics_mvp.webapp import MechanicsWebHandler, forwarded_client_address
 from http.server import ThreadingHTTPServer
 
 
@@ -258,6 +259,138 @@ class AuthWebAppTests(unittest.TestCase):
 
         status, _headers, _payload = self._request("/api/avatars/%2e%2e%2fsecret")
         self.assertEqual(status, 404)
+
+    def _register_as(self, username: str, **headers: str):
+        return self._request(
+            "/api/auth/register",
+            method="POST",
+            headers={"Origin": self.origin, **headers},
+            payload={
+                "username": username,
+                "password": "correct-horse-battery",
+                "passwordConfirm": "correct-horse-battery",
+                "displayName": "同学",
+                "acceptedTerms": True,
+                "acceptedPrivacy": True,
+            },
+        )
+
+    def test_forwarded_client_address_prefers_real_ip_then_last_forwarded_hop(self) -> None:
+        class Headers(dict):
+            def get(self, key, default=None):
+                return super().get(key, default)
+
+        self.assertEqual(
+            forwarded_client_address(
+                Headers({"X-Real-IP": "203.0.113.10", "X-Forwarded-For": "198.51.100.1, 203.0.113.10"}),
+                "10.0.0.8",
+            ),
+            "203.0.113.10",
+        )
+        self.assertEqual(
+            forwarded_client_address(
+                Headers({"X-Forwarded-For": "198.51.100.1, 203.0.113.10"}),
+                "10.0.0.8",
+            ),
+            "203.0.113.10",
+        )
+        self.assertEqual(forwarded_client_address(Headers({"X-Real-IP": "not-an-ip"}), "10.0.0.8"), "10.0.0.8")
+
+    def test_registration_bucket_follows_forwarded_client_not_the_proxy(self) -> None:
+        self.auth_service.config = replace(self.auth_service.config, registration_address_limit=2)
+        first, _, _ = self._register_as("student-a", **{"X-Real-IP": "203.0.113.10"})
+        second, _, _ = self._register_as(
+            "student-b",
+            **{"X-Real-IP": "203.0.113.10", "X-Forwarded-For": "198.51.100.9, 203.0.113.10"},
+        )
+        blocked, _, payload = self._register_as(
+            "student-c",
+            **{"X-Real-IP": "203.0.113.10", "X-Forwarded-For": "198.51.100.77"},
+        )
+        other, _, _ = self._register_as("student-d", **{"X-Real-IP": "203.0.113.11"})
+        self.assertEqual(first, 201)
+        self.assertEqual(second, 201)
+        self.assertEqual(blocked, 429)
+        self.assertEqual(payload["error"]["code"], "AUTH_RATE_LIMITED")
+        self.assertEqual(other, 201)
+
+        forwarded_first, _, _ = self._register_as(
+            "student-e",
+            **{"X-Forwarded-For": "203.0.113.50, 198.51.100.20"},
+        )
+        forwarded_second, _, _ = self._register_as(
+            "student-f",
+            **{"X-Forwarded-For": "203.0.113.51, 198.51.100.20"},
+        )
+        forwarded_blocked, _, forwarded_payload = self._register_as(
+            "student-i",
+            **{"X-Forwarded-For": "203.0.113.52, 198.51.100.20"},
+        )
+        self.assertEqual(forwarded_first, 201)
+        self.assertEqual(forwarded_second, 201)
+        self.assertEqual(forwarded_blocked, 429, forwarded_payload)
+
+    def test_username_login_limit_still_applies_across_forwarded_addresses(self) -> None:
+        self.auth_service.config = replace(
+            self.auth_service.config,
+            login_username_limit=2,
+            login_address_limit=30,
+        )
+        status, _, _ = self._register_as("student-g", **{"X-Real-IP": "203.0.113.20"})
+        self.assertEqual(status, 201)
+        anonymous = urllib.request.build_opener()
+        for address in ("203.0.113.21", "203.0.113.22"):
+            status, _, payload = self._request(
+                "/api/auth/login",
+                method="POST",
+                headers={"Origin": self.origin, "X-Real-IP": address},
+                payload={"username": "student-g", "password": "wrong-password"},
+                opener=anonymous,
+            )
+            self.assertEqual(status, 401, payload)
+        status, _, payload = self._request(
+            "/api/auth/login",
+            method="POST",
+            headers={"Origin": self.origin, "X-Real-IP": "203.0.113.23"},
+            payload={"username": "student-g", "password": "wrong-password"},
+            opener=anonymous,
+        )
+        self.assertEqual(status, 429)
+        self.assertEqual(payload["error"]["code"], "AUTH_RATE_LIMITED")
+
+        status, _, created = self._register_as("student-h", **{"X-Real-IP": "203.0.113.24"})
+        self.assertEqual(status, 201)
+        status, _, payload = self._request(
+            "/api/auth/login",
+            method="POST",
+            headers={"Origin": self.origin, "X-Real-IP": "203.0.113.25"},
+            payload={"username": "student-h", "password": "wrong-password"},
+            opener=anonymous,
+        )
+        self.assertEqual(status, 401)
+        self.assertNotEqual(payload["error"]["code"], "AUTH_RATE_LIMITED")
+        self.assertEqual(created["user"]["username"], "student-h")
+
+    def test_static_pages_use_the_same_framing_protections(self) -> None:
+        pages = {
+            "/": b'id="loginCard"',
+            "/static/privacy.html": "隐私说明".encode(),
+            "/static/terms.html": "用户协议".encode(),
+            "/static/app.js": b"function buildProject",
+            "/static/auth-client.js": b"authenticated",
+        }
+        for path, marker in pages.items():
+            status, headers, body = self._request(path)
+            self.assertEqual(status, 200, path)
+            policy = headers.get("Content-Security-Policy", "")
+            self.assertIn("script-src 'self'", policy, path)
+            self.assertIn("frame-ancestors 'none'", policy, path)
+            self.assertNotIn("unsafe-inline", policy, path)
+            self.assertEqual(headers.get("X-Frame-Options"), "DENY", path)
+            self.assertIn(marker, body)
+        status, _headers, home = self._request("/")
+        self.assertEqual(status, 200)
+        self.assertNotRegex(home.decode("utf-8"), r"<script(?![^>]*\bsrc=)")
 
 
 if __name__ == "__main__":

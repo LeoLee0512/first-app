@@ -1458,6 +1458,19 @@ function deleteSelection() {
   });
 }
 
+function memberCatalog(elements) {
+  return ProjectAdapter.solveCatalog({
+    materials: state.projectMaterials,
+    sections: state.projectSections,
+    toolbar: {
+      E: els.materialE.value,
+      A: els.sectionA.value,
+      I: els.sectionI.value,
+    },
+    elements,
+  });
+}
+
 function buildProject(options = {}) {
   const scope = options.scope || "whole";
   const model = scopedModel(scope);
@@ -1465,6 +1478,7 @@ function buildProject(options = {}) {
   // for the solver; `expansion` maps each parent member to its segments and
   // travels with the project object without being serialised.
   const expanded = GeometryDiscretize.expandModel(model);
+  const catalog = memberCatalog(expanded.elements);
   const project = {
     schema: ProjectAdapter.STATIC_SCHEMA,
     application: ProjectAdapter.APPLICATION_ID,
@@ -1474,8 +1488,8 @@ function buildProject(options = {}) {
       solve_options: state.solveOptions.join(","),
     },
     solver: els.solverBackend.value,
-    materials: [{ id: "steel", E: els.materialE.value, nu: 0.3 }],
-    sections: [{ id: "default", A: els.sectionA.value, I: els.sectionI.value }],
+    materials: catalog.materials,
+    sections: catalog.sections,
     nodes: expanded.nodes.map((node) => ({
       id: node.id,
       x: `${node.x} m`,
@@ -1486,12 +1500,12 @@ function buildProject(options = {}) {
       fused: Boolean(node.fused),
       ...(node.parent ? { parent: node.parent } : {}),
     })),
-    elements: expanded.elements.map((element) => ({
+    elements: expanded.elements.map((element, index) => ({
       id: element.id,
       node_i: element.node_i,
       node_j: element.node_j,
-      material: "steel",
-      section: "default",
+      material: catalog.elements[index].material,
+      section: catalog.elements[index].section,
       ...ProjectAdapter.solverElement(element),
       geometry: elementGeometryOf(element),
       curvature: Number(element.curvature || 0),
@@ -1737,12 +1751,7 @@ function saveProject() {
 }
 
 function buildEditableProject() {
-  const materials = JSON.parse(JSON.stringify(state.projectMaterials));
-  const sections = JSON.parse(JSON.stringify(state.projectSections));
-  if (!materials.length) materials.push({ id: "steel", E: els.materialE.value, nu: 0.3 });
-  if (!sections.length) sections.push({ id: "default", A: els.sectionA.value, I: els.sectionI.value });
-  materials[0] = { ...materials[0], E: els.materialE.value };
-  sections[0] = { ...sections[0], A: els.sectionA.value, I: els.sectionI.value };
+  const catalog = memberCatalog(state.elements);
   return {
     schema: ProjectAdapter.STATIC_SCHEMA,
     application: ProjectAdapter.APPLICATION_ID,
@@ -1753,8 +1762,8 @@ function buildEditableProject() {
       solve_options: state.solveOptions.join(","),
     },
     solver: els.solverBackend.value,
-    materials,
-    sections,
+    materials: catalog.materials,
+    sections: catalog.sections,
     nodes: state.nodes.map((node) => ({
       id: node.id,
       x: `${node.x} m`,
@@ -1763,12 +1772,12 @@ function buildEditableProject() {
       support: node.support || { type: "free", angle: 0, mode: "free" },
       fused: Boolean(node.fused),
     })),
-    elements: state.elements.map((element) => ({
+    elements: state.elements.map((element, index) => ({
       id: element.id,
       node_i: element.node_i,
       node_j: element.node_j,
-      material: element.material || materials[0].id,
-      section: element.section || sections[0].id,
+      material: catalog.elements[index].material,
+      section: catalog.elements[index].section,
       type: element.type || "frame",
       geometry: elementGeometryOf(element),
       curvature: Number(element.curvature || 0),
@@ -2022,26 +2031,16 @@ function makeDistributedLoad(element) {
     };
   }
 
-  const qiMagnitude = shape === "triangular" ? 0 : Math.abs(quantityToNumber(els.distributedQi.value, "N/m"));
-  const qjMagnitude = Math.abs(quantityToNumber(els.distributedQj.value, "N/m"));
-  const qi = localLoadComponents(element, qiMagnitude);
-  const qj = localLoadComponents(element, qjMagnitude);
-  if (shape === "rectangular") {
-    return {
-      element: element.id,
-      kind: "uniform_local",
-      qx: formatQuantity(qi.qx, "N/m"),
-      qy: formatQuantity(qi.qy, "N/m"),
-    };
-  }
-  return {
-    element: element.id,
-    kind: "linear_local",
-    qx_i: formatQuantity(qi.qx, "N/m"),
-    qy_i: formatQuantity(qi.qy, "N/m"),
-    qx_j: formatQuantity(qj.qx, "N/m"),
-    qy_j: formatQuantity(qj.qy, "N/m"),
-  };
+  return DistributedLoad.memberDistributedLoad({
+    elementId: element.id,
+    shape,
+    qi: els.distributedQi.value,
+    qj: els.distributedQj.value,
+    direction: els.distributedDirection.value,
+    angle: els.distributedAngle.value,
+    nodeI: getNode(element.node_i),
+    nodeJ: getNode(element.node_j),
+  });
 }
 
 function splitCoefficients(text) {
@@ -2049,27 +2048,6 @@ function splitCoefficients(text) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function globalVectorFromDirection(magnitude, direction, angleValue) {
-  const angleMap = { right: 0, up: 90, left: 180, down: -90 };
-  const angle = (direction === "angle" ? Number(angleValue || 0) : angleMap[direction]) * (Math.PI / 180);
-  return { x: magnitude * Math.cos(angle), y: magnitude * Math.sin(angle) };
-}
-
-function localLoadComponents(element, magnitude) {
-  const nodeI = getNode(element.node_i);
-  const nodeJ = getNode(element.node_j);
-  const dx = nodeJ.x - nodeI.x;
-  const dy = nodeJ.y - nodeI.y;
-  const length = Math.hypot(dx, dy) || 1;
-  const c = dx / length;
-  const s = dy / length;
-  const global = globalVectorFromDirection(magnitude, els.distributedDirection.value, els.distributedAngle.value);
-  return {
-    qx: c * global.x + s * global.y,
-    qy: -s * global.x + c * global.y,
-  };
 }
 
 function openSolveDialog() {
@@ -2352,7 +2330,9 @@ function appendDiagnosticsResult(lines, diagnostics) {
   lines.push(`- 约束自由度数：${diagnostics.restrained_dof_count ?? 0}`);
   lines.push(`- 总自由度数：${diagnostics.total_dof_count ?? 0}`);
   lines.push(`- 自由自由度数：${diagnostics.free_dof_count ?? 0}`);
-  lines.push(`- 静定指数 s：${diagnostics.determinacy_index ?? 0}`);
+  const ignoresHinges = Boolean(diagnostics.index_ignores_hinges)
+    || (diagnostics.issues || []).some((issue) => issue.code === "index_ignores_hinges");
+  if (!ignoresHinges) lines.push(`- 静定指数 s：${diagnostics.determinacy_index ?? 0}`);
   const components = diagnostics.connected_components || [];
   if (components.length) {
     lines.push(`- 连通分量：${components.map((component) => `[${component.join(", ")}]`).join("；")}`);
@@ -2390,6 +2370,7 @@ function diagnosticIssueText(issue) {
     likely_mechanism: "静定指数为负，模型可能为机构或约束不足。",
     roughly_determinate: "静定指数为 0，拓扑估算可能为静定结构。",
     roughly_indeterminate: "静定指数为正，拓扑估算可能为超静定结构。",
+    index_ignores_hinges: "刚架公式 s = r + 3m − 3j 不计入桁架铰和弯矩释放，不能当作静定或超静定判断。",
   };
   return messages[issue.code] || issue.message || issue.code || "未知诊断信息。";
 }
@@ -4536,70 +4517,102 @@ function drawElementLoads() {
     const nodeI = getNode(element.node_i);
     const nodeJ = getNode(element.node_j);
     if (!nodeI || !nodeJ) continue;
-    const a = worldToScreen(nodeI);
-    const b = worldToScreen(nodeJ);
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const length = Math.hypot(dx, dy) || 1;
-    const normal = { x: -dy / length, y: dx / length };
+    // Same path the solver discretises: arc length, not the end-node chord.
+    const screenPath = GeometryDiscretize.elementPath(element, nodeI, nodeJ).map((point) => worldToScreen(point));
+    if (screenPath.length < 2) continue;
     if (load.kind === "uniform_moment_local") {
-      drawUniformMomentLoad(load, a, b, normal);
+      drawUniformMomentLoad(load, screenPath);
       continue;
     }
-    const qi = quantityToNumber(load.qy_i || load.qy, "N/m");
-    const qj = quantityToNumber(load.qy_j || load.qy, "N/m");
-    const maxQ = Math.max(Math.abs(qi), Math.abs(qj), 1);
-    const side = Math.abs(qi) >= Math.abs(qj) ? (qi < 0 ? 1 : -1) : qj < 0 ? 1 : -1;
-    const count = 9;
-    const starts = [];
-    ctx.save();
-    ctx.strokeStyle = cssColor("--danger");
-    ctx.fillStyle = cssColor("--danger");
-    ctx.lineWidth = 1.8;
-    for (let index = 0; index < count; index++) {
-      const r = count === 1 ? 0 : index / (count - 1);
-      const q = qi + (qj - qi) * r;
-      const base = { x: a.x + dx * r, y: a.y + dy * r };
-      const arrowLength = Math.max(3, (Math.abs(q) / maxQ) * 38);
-      const start = {
-        x: base.x + normal.x * arrowLength * side,
-        y: base.y + normal.y * arrowLength * side,
-      };
-      starts.push(start);
-      if (Math.abs(q) > maxQ * 0.03) drawArrow(start, base, cssColor("--danger"));
-    }
-    ctx.beginPath();
-    starts.forEach((point, index) => {
-      if (index === 0) ctx.moveTo(point.x, point.y);
-      else ctx.lineTo(point.x, point.y);
-    });
-    ctx.stroke();
-    line(starts[0], a);
-    line(starts[starts.length - 1], b);
-    const mid = starts[Math.floor(starts.length / 2)];
-    drawText(distributedLoadLabel(load), mid.x + normal.x * 8 * side, mid.y + normal.y * 8 * side, cssColor("--danger"));
-    ctx.restore();
+    drawDistributedForceAlongPath(load, nodeI, nodeJ, screenPath);
   }
   ctx.restore();
 }
 
-function drawUniformMomentLoad(load, a, b, normal) {
-  const intensity = quantityToNumber(load.mz || "0 N*m/m", "N*m/m");
-  const sign = intensity >= 0 ? 1 : -1;
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
+function drawDistributedForceAlongPath(load, nodeI, nodeJ, screenPath) {
+  const count = 9;
+  const samples = [];
+  let maxMagnitude = 1;
+  for (let index = 0; index < count; index += 1) {
+    const ratio = count === 1 ? 0 : index / (count - 1);
+    const global = GeometryDiscretize.globalDistributedIntensity(load, nodeI, nodeJ, ratio);
+    const magnitude = Math.hypot(global.x, global.y);
+    samples.push({ ratio, global, magnitude });
+    maxMagnitude = Math.max(maxMagnitude, magnitude);
+  }
+  const starts = [];
   ctx.save();
   ctx.strokeStyle = cssColor("--danger");
   ctx.fillStyle = cssColor("--danger");
   ctx.lineWidth = 1.8;
-  for (let index = 1; index <= 5; index++) {
-    const r = index / 6;
-    const center = { x: a.x + dx * r + normal.x * 24, y: a.y + dy * r + normal.y * 24 };
-    drawMomentGlyph(center, sign);
+  for (const sample of samples) {
+    const base = GeometryDiscretize.pointAtPathRatio(screenPath, sample.ratio);
+    let start = base;
+    if (sample.magnitude > maxMagnitude * 0.03) {
+      const screenX = sample.global.x;
+      const screenY = -sample.global.y;
+      const scale = Math.hypot(screenX, screenY) || 1;
+      const arrowLength = Math.max(3, (sample.magnitude / maxMagnitude) * 38);
+      start = {
+        x: base.x - (screenX / scale) * arrowLength,
+        y: base.y - (screenY / scale) * arrowLength,
+      };
+      drawArrow(start, base, cssColor("--danger"));
+    }
+    starts.push(start);
   }
-  const mid = { x: (a.x + b.x) / 2 + normal.x * 48, y: (a.y + b.y) / 2 + normal.y * 48 };
+  ctx.beginPath();
+  starts.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  ctx.stroke();
+  line(starts[0], screenPath[0]);
+  line(starts[starts.length - 1], screenPath[screenPath.length - 1]);
+  const mid = starts[Math.floor(starts.length / 2)];
+  const midSample = samples[Math.floor(samples.length / 2)];
+  const labelOffset = labelOffsetForLoad(mid, midSample);
+  drawText(distributedLoadLabel(load), labelOffset.x, labelOffset.y, cssColor("--danger"));
+  ctx.restore();
+}
+
+function labelOffsetForLoad(point, sample) {
+  const screenX = sample.global.x;
+  const screenY = -sample.global.y;
+  const scale = Math.hypot(screenX, screenY) || 1;
+  const side = sample.magnitude > 0 ? 1 : 0;
+  return {
+    x: point.x - (screenX / scale) * 8 * side,
+    y: point.y - (screenY / scale) * 8 * side,
+  };
+}
+
+function drawUniformMomentLoad(load, screenPath) {
+  const intensity = quantityToNumber(load.mz || "0 N*m/m", "N*m/m");
+  const sign = intensity >= 0 ? 1 : -1;
+  ctx.save();
+  ctx.strokeStyle = cssColor("--danger");
+  ctx.fillStyle = cssColor("--danger");
+  ctx.lineWidth = 1.8;
+  for (let index = 1; index <= 5; index += 1) {
+    drawMomentGlyph(pointBesidePath(screenPath, index / 6, 24), sign);
+  }
+  const mid = pointBesidePath(screenPath, 0.5, 48);
   drawText(load.mz || "0 N*m/m", mid.x, mid.y, cssColor("--danger"));
   ctx.restore();
+}
+
+function pointBesidePath(screenPath, ratio, distance) {
+  const base = GeometryDiscretize.pointAtPathRatio(screenPath, ratio);
+  const ahead = GeometryDiscretize.pointAtPathRatio(screenPath, Math.min(1, ratio + 0.02));
+  const behind = GeometryDiscretize.pointAtPathRatio(screenPath, Math.max(0, ratio - 0.02));
+  const dx = ahead.x - behind.x;
+  const dy = ahead.y - behind.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return {
+    x: base.x + (-dy / length) * distance,
+    y: base.y + (dx / length) * distance,
+  };
 }
 
 function distributedLoadLabel(load) {

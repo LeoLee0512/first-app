@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import mimetypes
 import os
@@ -266,7 +267,8 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             service = self._auth_service()
             session_token = read_session_cookie(self.headers)
             csrf_token = str(self.headers.get("X-CSRF-Token", ""))
-            remote_address = str(self.client_address[0]) if self.client_address else "unknown"
+            peer = str(self.client_address[0]) if self.client_address else "unknown"
+            remote_address = forwarded_client_address(self.headers, peer)
 
             if method == "POST" and request_path == "/api/auth/register":
                 payload = self._read_json_body()
@@ -458,12 +460,9 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             return
 
         content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-        data = target.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", f"{content_type}; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        if content_type.startswith("text/") or content_type in {"application/javascript", "application/json"}:
+            content_type = f"{content_type}; charset=utf-8"
+        self._send_bytes(target.read_bytes(), content_type=content_type)
 
     def _serve_manual(self) -> None:
         if not MANUAL_FILE.is_file():
@@ -523,6 +522,43 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(data)
+
+
+def forwarded_client_address(headers: Any, peer: str) -> str:
+    """Client address for the login and registration buckets.
+
+    nginx replaces X-Real-IP with the address it accepted and appends that
+    same address to X-Forwarded-For. The left-most forwarded hop is whatever
+    the browser sent, so it is not the bucket key. Without either header,
+    the TCP peer is used.
+    """
+
+    real_ip = _header_ip(headers.get("X-Real-IP") if headers is not None else None)
+    if real_ip:
+        return real_ip
+    forwarded = headers.get("X-Forwarded-For") if headers is not None else None
+    if forwarded:
+        hops = [ip for ip in (_header_ip(part) for part in str(forwarded).split(",")) if ip]
+        if hops:
+            return hops[-1]
+    return peer or "unknown"
+
+
+def _header_ip(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().strip('"')
+    if not text or text.lower() == "unknown":
+        return None
+    if text.startswith("["):
+        end = text.find("]")
+        text = text[1:end] if end > 1 else ""
+    elif text.count(":") == 1 and "." in text:
+        text = text.split(":", 1)[0]
+    try:
+        return ipaddress.ip_address(text).compressed
+    except ValueError:
+        return None
 
 
 def main(argv: list[str] | None = None) -> int:

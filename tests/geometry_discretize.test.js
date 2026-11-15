@@ -77,6 +77,18 @@ test("distributed loads are converted from chord-local to segment-local by arc l
   assert.ok(Math.abs(num(vertical.qy_i)) < 1e-6);
 });
 
+test("path-length load keeps one global direction on every leg", () => {
+  const length = Math.hypot(3, 2);
+  const c = 3 / length;
+  const s = 2 / length;
+  const load = { element: "E1", kind: "uniform_local", qx: `${s * -5000} N/m`, qy: `${c * -5000} N/m` };
+  for (const ratio of [0.2, 0.8]) {
+    const global = Geometry.globalDistributedIntensity(load, nodes[0], nodes[1], ratio);
+    assert.ok(Math.abs(global.x) < 1e-6, `gx at ${ratio}`);
+    assert.ok(Math.abs(global.y + 5000) < 1e-6, `gy at ${ratio}`);
+  }
+});
+
 test("uniform couples are copied onto every segment", () => {
   const load = { element: "E1", kind: "uniform_moment_local", mz: "2 kN*m/m" };
   const expanded = Geometry.expandModel({ nodes, elements: [rightAngle], loads: [], elementLoads: [load] });

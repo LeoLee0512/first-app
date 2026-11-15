@@ -144,6 +144,58 @@ class ReportTests(unittest.TestCase):
         self.assertIn("Fy=-3 kN", text)
         self.assertIn("Mz=2 kN·m", text)
 
+    def test_selection_report_does_not_call_the_frame_an_isolated_body(self):
+        project = project_from_dict(
+            {
+                "metadata": {"name": "canvas_project", "report_scope": "selection"},
+                "materials": [{"id": "steel", "E": "200 GPa"}],
+                "sections": [{"id": "default", "A": "10000 mm^2", "I": "80000000 mm^4"}],
+                "nodes": [
+                    {"id": "N1", "x": "0 m", "y": "0 m", "restraints": ["ux", "uy", "rz"]},
+                    {"id": "N2", "x": "2 m", "y": "0 m"},
+                    {"id": "N3", "x": "4 m", "y": "0 m"},
+                ],
+                "elements": [
+                    {"id": "E1", "node_i": "N1", "node_j": "N2", "material": "steel", "section": "default"},
+                    {"id": "E2", "node_i": "N2", "node_j": "N3", "material": "steel", "section": "default"},
+                ],
+                "loads": {"nodes": [{"node": "N3", "fy": "-10 kN"}]},
+            }
+        )
+        text = build_report_text(project, solve_with_backend(project), options=["displacement", "internal", "moment"])
+
+        self.assertIn("整体模型（求解整架；所选杆件只用于画面显示）", text)
+        self.assertNotIn("选中隔离体", text)
+        self.assertIn("E1", text)
+        self.assertIn("E2", text)
+
+    def test_truss_report_does_not_say_determinate_and_indeterminate(self):
+        project = project_from_dict(
+            {
+                "materials": [{"id": "steel", "E": "200 GPa"}],
+                "sections": [{"id": "default", "A": "10000 mm^2", "I": "80000000 mm^4"}],
+                "nodes": [
+                    {"id": "A", "x": "0 m", "y": "0 m", "restraints": ["ux", "uy"]},
+                    {"id": "B", "x": "4 m", "y": "0 m", "restraints": ["uy"]},
+                    {"id": "C", "x": "2 m", "y": "2 m"},
+                ],
+                "elements": [
+                    {"id": "E1", "node_i": "A", "node_j": "B", "material": "steel", "section": "default", "type": "truss"},
+                    {"id": "E2", "node_i": "B", "node_j": "C", "material": "steel", "section": "default", "type": "truss"},
+                    {"id": "E3", "node_i": "C", "node_j": "A", "material": "steel", "section": "default", "type": "truss"},
+                ],
+                "loads": {"nodes": [{"node": "C", "fy": "-1 kN"}]},
+            }
+        )
+        text = build_report_text(project, solve_with_backend(project))
+        beam = build_report_text(sample_project(), solve_with_backend(sample_project()))
+
+        self.assertIn("几何不变、静定结构", text)
+        self.assertNotIn("可能为超静定", text)
+        self.assertNotIn("静定指数：", text)
+        self.assertIn("不计入桁架铰", text)
+        self.assertIn("静定指数：", beam)
+
 
 if __name__ == "__main__":
     unittest.main()

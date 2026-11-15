@@ -1,3 +1,4 @@
+import json
 import math
 import sys
 import unittest
@@ -10,8 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mechanics_mvp.models import Element, ElementLoad, Material, NodalLoad, Node, Project, Section
 from mechanics_mvp.engine import solve_with_backend
+from mechanics_mvp.preprocess import ValidationError
 from mechanics_mvp.report import build_report_pdf
 from mechanics_mvp.solver import Frame2DSolver, SolverError
+from mechanics_mvp.webapp import solve_project_payload
 
 
 class SolverTests(unittest.TestCase):
@@ -154,6 +157,72 @@ class SolverTests(unittest.TestCase):
 
         with self.assertRaises((ValueError, SolverError)):
             Frame2DSolver().solve(project)
+
+    def _cantilever(self, modulus: float, moment: float) -> Project:
+        return Project(
+            nodes=(
+                Node("A", 0.0, 0.0, (True, True, True)),
+                Node("B", 2.0, 0.0),
+            ),
+            materials=(Material("steel", 200e9), Material("aluminum", modulus)),
+            sections=(Section("section", 0.01, 8e-5),),
+            elements=(Element("E1", "A", "B", "aluminum", "section"),),
+            nodal_loads=(NodalLoad("B", mz=moment),),
+        )
+
+    def test_member_material_changes_the_stiffness(self):
+        steel = Frame2DSolver().solve(self._cantilever(200e9, -1000.0))
+        aluminum = Frame2DSolver().solve(self._cantilever(70e9, -1000.0))
+        steel_rotation = steel.displacements["B"]["rz"]
+        aluminum_rotation = aluminum.displacements["B"]["rz"]
+        self.assertNotAlmostEqual(steel_rotation, aluminum_rotation)
+        self.assertAlmostEqual(aluminum_rotation / steel_rotation, 200e9 / 70e9, places=6)
+
+    def test_negative_end_moment_flexibility_matches_the_printed_load(self):
+        length = 2.0
+        moment = -1000.0
+        modulus = 200e9
+        inertia = 8e-5
+        result = Frame2DSolver().solve(self._cantilever(modulus, moment))
+        rotation = result.displacements["B"]["rz"]
+        self.assertAlmostEqual(rotation, moment * length / (modulus * inertia))
+        row = result.summary["load_point_flexibility"][0]
+        self.assertEqual(row["kind"], "rotation")
+        self.assertAlmostEqual(row["load"], abs(moment))
+        self.assertAlmostEqual(row["displacement"] / row["load"], row["flexibility"])
+        self.assertAlmostEqual(row["flexibility"], rotation / moment)
+        self.assertGreater(row["flexibility"], 0.0)
+
+        positive = Frame2DSolver().solve(self._cantilever(modulus, 1000.0))
+        positive_row = positive.summary["load_point_flexibility"][0]
+        self.assertAlmostEqual(positive_row["displacement"], positive.displacements["B"]["rz"])
+        self.assertAlmostEqual(positive_row["displacement"] / positive_row["load"], positive_row["flexibility"])
+
+    def test_nonpositive_modulus_area_and_inertia_are_rejected(self):
+        base = {
+            "materials": [{"id": "steel", "E": "200 GPa"}],
+            "sections": [{"id": "default", "A": "10000 mm^2", "I": "80000000 mm^4"}],
+            "nodes": [
+                {"id": "N1", "x": "0 m", "y": "0 m", "restraints": ["ux", "uy", "rz"]},
+                {"id": "N2", "x": "2 m", "y": "0 m"},
+            ],
+            "elements": [{"id": "E1", "node_i": "N1", "node_j": "N2", "material": "steel", "section": "default"}],
+            "loads": {"nodes": [{"node": "N2", "fy": "-1 kN"}]},
+        }
+        cases = (
+            ("materials", 0, "E", "-200 GPa", "弹性模量 E"),
+            ("sections", 0, "A", "-10000 mm^2", "面积 A"),
+            ("sections", 0, "I", "-80000000 mm^4", "惯性矩 I"),
+            ("sections", 0, "I", "0 mm^4", "惯性矩 I"),
+        )
+        for collection, index, key, value, label in cases:
+            with self.subTest(key=key, value=value):
+                payload = json.loads(json.dumps(base))
+                payload[collection][index][key] = value
+                with self.assertRaises(ValidationError) as captured:
+                    solve_project_payload(payload)
+                self.assertIn(label, str(captured.exception))
+                self.assertIn("必须为正", str(captured.exception))
 
 
 if __name__ == "__main__":

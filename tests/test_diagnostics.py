@@ -68,6 +68,29 @@ class DiagnosticsTests(unittest.TestCase):
         zero_length_issue = next(issue for issue in diagnostics.issues if issue.code == "zero_length_element")
         self.assertEqual(zero_length_issue.level, "error")
 
+    def test_truss_does_not_treat_the_rigid_frame_index_as_indeterminate(self):
+        project = Project(
+            nodes=(
+                Node("A", 0.0, 0.0, (True, True, False)),
+                Node("B", 4.0, 0.0, (False, True, False)),
+                Node("C", 2.0, 2.0),
+            ),
+            materials=(Material("steel", 200e9),),
+            sections=(Section("section", 0.01, 8e-5),),
+            elements=(
+                Element("E1", "A", "B", "steel", "section", "truss"),
+                Element("E2", "B", "C", "steel", "section", "truss"),
+                Element("E3", "C", "A", "steel", "section", "truss"),
+            ),
+        )
+
+        diagnostics = diagnose_project(project)
+
+        self.assertTrue(diagnostics.index_ignores_hinges)
+        self.assertEqual(diagnostics.determinacy_index, 3)
+        self.assertNotIn("roughly_indeterminate", issue_codes(diagnostics))
+        self.assertIn("index_ignores_hinges", issue_codes(diagnostics))
+
 
 if __name__ == "__main__":
     unittest.main()

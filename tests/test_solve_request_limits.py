@@ -10,6 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from unittest.mock import patch
+
+from mechanics_mvp.models import Element, Material, Node, Project, Section
+from mechanics_mvp.preprocess import MAX_SOLVE_DOFS, MAX_SOLVE_NODES, ValidationError, validate_project
+from mechanics_mvp.solver import Frame2DSolver
 from mechanics_mvp.webapp import SOLVER_BODY_LIMIT, MechanicsWebHandler
 
 
@@ -99,6 +104,64 @@ class SolveRequestLimitTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertAlmostEqual(payload["reactions"]["N1"]["fy"], 10_000.0)
         self.assertEqual(payload["summary"]["system"]["classification"], "determinate")
+
+    def _oversized_project(self) -> dict:
+        nodes = [
+            {
+                "id": f"N{index}",
+                "x": f"{index} m",
+                "y": "0 m",
+                "restraints": ["ux", "uy", "rz"] if index == 0 else [],
+            }
+            for index in range(MAX_SOLVE_NODES + 1)
+        ]
+        return {
+            "materials": [{"id": "steel", "E": "200 GPa"}],
+            "sections": [{"id": "default", "A": "10000 mm^2", "I": "80000000 mm^4"}],
+            "nodes": nodes,
+            "elements": [{"id": "E1", "node_i": "N0", "node_j": "N1", "material": "steel", "section": "default"}],
+            "loads": {"nodes": [{"node": "N1", "fy": "-1 kN"}]},
+        }
+
+    def test_solve_and_report_reject_models_above_the_node_cap(self):
+        body = json.dumps(self._oversized_project()).encode("utf-8")
+        for path in ("/api/solve", "/api/report"):
+            with self.subTest(path=path):
+                status, payload = self.raw_post(path, body)
+                self.assertEqual(status, 422)
+                self.assertIn(str(MAX_SOLVE_NODES), payload["error"])
+                self.assertIn(str(MAX_SOLVE_DOFS), payload["error"])
+                self.assertIn("3N×3N", payload["error"])
+
+    def test_cap_is_enforced_before_the_dense_matrices_are_allocated(self):
+        nodes = tuple(
+            Node(f"N{index}", float(index), 0.0, (True, True, True) if index == 0 else (False, False, False))
+            for index in range(MAX_SOLVE_NODES + 1)
+        )
+        project = Project(
+            nodes=nodes,
+            materials=(Material("steel", 200e9),),
+            sections=(Section("section", 0.01, 8e-5),),
+            elements=(Element("E1", "N0", "N1", "steel", "section"),),
+        )
+        with patch("mechanics_mvp.solver.np.zeros") as zeros:
+            with self.assertRaises(ValidationError) as captured:
+                Frame2DSolver().solve(project)
+        zeros.assert_not_called()
+        self.assertIn(str(MAX_SOLVE_NODES), str(captured.exception))
+        self.assertIn(str(MAX_SOLVE_DOFS), str(captured.exception))
+
+    def test_a_real_frame_at_the_cap_is_not_refused_for_size(self):
+        nodes = tuple(Node(f"N{index}", float(index), 0.0, (True, True, True)) for index in range(MAX_SOLVE_NODES))
+        project = Project(
+            nodes=nodes,
+            materials=(Material("steel", 200e9),),
+            sections=(Section("section", 0.01, 8e-5),),
+            elements=(Element("E1", "N0", "N1", "steel", "section"),),
+        )
+        with self.assertRaises(ValidationError) as captured:
+            validate_project(project)
+        self.assertNotIn("求解规模上限", str(captured.exception))
 
 
 if __name__ == "__main__":

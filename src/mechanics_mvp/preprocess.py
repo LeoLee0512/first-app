@@ -21,12 +21,33 @@ SUPPORTED_ELEMENT_LOADS = {
     "uniform_moment_local",
 }
 
+# Two dense float64 matrices, K and T K Tᵀ, are each (3N)².
+# 500 nodes is a large plane frame (tens of storeys and many bays), about
+# 36 MB for the pair. Larger models are refused before those arrays exist.
+MAX_SOLVE_NODES = 500
+MAX_SOLVE_DOFS = MAX_SOLVE_NODES * len(DOFS)
+
 
 def validate_project(project: Project) -> None:
+    node_count = len(project.nodes)
+    dof_count = node_count * len(DOFS)
+    if node_count > MAX_SOLVE_NODES or dof_count > MAX_SOLVE_DOFS:
+        raise ValidationError(
+            f"模型超过求解规模上限：最多 {MAX_SOLVE_NODES} 个节点"
+            f"（{MAX_SOLVE_DOFS} 个自由度）。"
+            "超过该上限时，求解和计算书会在分配两块稠密 3N×3N 总刚之前拒绝。"
+        )
+
     _ensure_unique("node", [node.id for node in project.nodes])
     _ensure_unique("material", [material.id for material in project.materials])
     _ensure_unique("section", [section.id for section in project.sections])
     _ensure_unique("element", [element.id for element in project.elements])
+
+    for material in project.materials:
+        _require_positive(material.elastic_modulus, f"材料 {material.id} 的弹性模量 E ")
+    for section in project.sections:
+        _require_positive(section.area, f"截面 {section.id} 的面积 A ")
+        _require_positive(section.inertia, f"截面 {section.id} 的惯性矩 I ")
 
     nodes = {node.id: node for node in project.nodes}
     materials = {material.id for material in project.materials}
@@ -97,6 +118,11 @@ def validate_project(project: Project) -> None:
         if load.kind == "point_global":
             if load.ratio is None or not math.isfinite(load.ratio) or not 0.0 <= load.ratio <= 1.0:
                 raise ValidationError(f"Point load on element {load.element} must have a ratio between 0 and 1.")
+
+
+def _require_positive(value: float, label: str) -> None:
+    if not math.isfinite(value) or value <= 0.0:
+        raise ValidationError(f"{label}必须为正，求解前已拒绝。")
 
 
 def _ensure_unique(label: str, ids: list[str]) -> None:

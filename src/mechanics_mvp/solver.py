@@ -770,14 +770,21 @@ def _load_point_flexibility(
                 }
             )
         if abs(load.mz) > 0.0:
-            rotation = displacement.get("rz", 0.0)
+            # Same convention as a force: the printed load is the magnitude,
+            # the printed rotation is the component along that moment, and
+            # flexibility is that component divided by the magnitude. That
+            # equals the signed rotation divided by the signed moment.
+            rotation = float(displacement.get("rz", 0.0))
+            signed_moment = float(load.mz)
+            moment_magnitude = abs(signed_moment)
+            projected = rotation if signed_moment > 0.0 else -rotation
             values.append(
                 {
                     "node": load.node,
                     "kind": "rotation",
-                    "load": abs(load.mz),
-                    "displacement": rotation,
-                    "flexibility": rotation / load.mz,
+                    "load": moment_magnitude,
+                    "displacement": projected,
+                    "flexibility": projected / moment_magnitude,
                 }
             )
     return values

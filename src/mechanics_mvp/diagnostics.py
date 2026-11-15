@@ -24,6 +24,8 @@ class ModelDiagnostics:
     free_dof_count: int
     determinacy_index: int
     connected_components: list[list[str]]
+    # True when s = r + 3m - 3j ignores truss hinges or moment releases.
+    index_ignores_hinges: bool = False
     issues: list[DiagnosticIssue] = field(default_factory=list)
 
 
@@ -114,7 +116,13 @@ def diagnose_project(project: Project) -> ModelDiagnostics:
 
     # Plane-frame rough determinacy estimate: s = r + 3m - 3j.
     # This is topological screening, not a stiffness-rank stability proof.
+    # It does not see truss hinges or moment releases, so it must not be
+    # reported as the same judgement as classify_system when those exist.
     determinacy_index = restrained_dof_count + 3 * len(project.elements) - 3 * len(project.nodes)
+    index_ignores_hinges = any(
+        element.type == "truss" or element.moment_release_i or element.moment_release_j
+        for element in project.elements
+    )
 
     if free_dof_count <= 0:
         issues.append(
@@ -125,7 +133,18 @@ def diagnose_project(project: Project) -> ModelDiagnostics:
             )
         )
 
-    if determinacy_index < 0:
+    if index_ignores_hinges:
+        issues.append(
+            DiagnosticIssue(
+                level="info",
+                code="index_ignores_hinges",
+                message=(
+                    "The rigid-frame count s = r + 3m - 3j ignores truss hinges and "
+                    "moment releases. It is not the determinacy judgement."
+                ),
+            )
+        )
+    elif determinacy_index < 0:
         issues.append(
             DiagnosticIssue(
                 level="warning",
@@ -164,6 +183,7 @@ def diagnose_project(project: Project) -> ModelDiagnostics:
         free_dof_count=free_dof_count,
         determinacy_index=determinacy_index,
         connected_components=connected_components,
+        index_ignores_hinges=index_ignores_hinges,
         issues=issues,
     )
 
