@@ -196,6 +196,28 @@ class ReportTests(unittest.TestCase):
         self.assertIn("不计入桁架铰", text)
         self.assertIn("静定指数：", beam)
 
+    def test_inclined_support_report_shows_angle_and_global_components(self):
+        """A 30° roller must not read as a plain uy support in the report."""
+        project = project_from_dict(
+            {
+                "materials": [{"id": "steel", "E": "200 GPa"}],
+                "sections": [{"id": "default", "A": "10000 mm^2", "I": "80000000 mm^4"}],
+                "nodes": [
+                    {"id": "A", "x": "0 m", "y": "0 m", "restraints": ["ux", "uy", "rz"]},
+                    {"id": "B", "x": "2 m", "y": "0 m", "restraints": ["uy"], "support_angle": 30},
+                ],
+                "elements": [
+                    {"id": "E1", "node_i": "A", "node_j": "B", "material": "steel", "section": "default"}
+                ],
+                "loads": {"nodes": [{"node": "B", "fy": "-1 kN"}]},
+            }
+        )
+        text = build_report_text(project, solve_with_backend(project))
+
+        self.assertIn("约束=uy，支座方向=30°", text)
+        self.assertIn("约束 ux/uy 沿支座轴", text)
+        self.assertIn("30° 斜支座，Fx/Fy 为全局分量", text)
+
 
 if __name__ == "__main__":
     unittest.main()

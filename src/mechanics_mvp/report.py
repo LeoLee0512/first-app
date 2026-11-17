@@ -128,13 +128,21 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
     if enabled("reaction"):
         lines.append("支座反力")
         reactions = _sorted_items(result.reactions)
+        inclined = {
+            node.id: node.support_angle
+            for node in project.nodes
+            if abs(node.support_angle) > 1e-9 and (node.restraints[0] or node.restraints[1])
+        }
         if not reactions:
             lines.append("- 未形成支座反力。")
         for node_id, values in reactions:
+            note = ""
+            if node_id in inclined:
+                note = f"（{_fmt(inclined[node_id])}° 斜支座，Fx/Fy 为全局分量）"
             lines.append(
                 f"- {node_id}: Fx={_fmt(values.get('fx', 0.0) / 1000)} kN，"
                 f"Fy={_fmt(values.get('fy', 0.0) / 1000)} kN，"
-                f"Mz={_fmt(values.get('mz', 0.0) / 1000)} kN·m"
+                f"Mz={_fmt(values.get('mz', 0.0) / 1000)} kN·m{note}"
             )
         lines.append("")
 
@@ -295,9 +303,12 @@ def _append_static_model_inputs(lines: list[str], project: Project) -> None:
         )
     for node in project.nodes:
         restrained = [name for name, active in zip(("ux", "uy", "rz"), node.restraints) if active]
+        support = ""
+        if abs(node.support_angle) > 1e-9:
+            support = f"，支座方向={_fmt(node.support_angle)}°（逆时针，约束 ux/uy 沿支座轴）"
         lines.append(
             f"- 节点 {node.id}: x={_fmt(node.x)} m，y={_fmt(node.y)} m，"
-            f"约束={','.join(restrained) if restrained else '无'}"
+            f"约束={','.join(restrained) if restrained else '无'}{support}"
         )
     for element in project.elements:
         releases = []
