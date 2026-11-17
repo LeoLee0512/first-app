@@ -3,7 +3,9 @@ from __future__ import annotations
 import io
 import sys
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
 
@@ -158,6 +160,58 @@ class AuthServiceTests(unittest.TestCase):
         self.assertNotIn("student01", serialized)
         self.assertNotIn("198.51.100.4", serialized)
         self.assertNotIn("wrong-password", serialized)
+
+    def test_concurrent_login_failures_cannot_bypass_the_rate_limit(self):
+        """The old check-then-act gate let 12 parallel wrong passwords
+        through with zero 429s; the reservation must serialize them."""
+        self._register()
+        barrier = threading.Barrier(12)
+
+        def attempt(_: int) -> str:
+            barrier.wait()
+            try:
+                self.service.login(
+                    username="student01",
+                    password="wrong-password",
+                    remote_address="198.51.100.4",
+                )
+                return "ok"
+            except AuthRateLimitError:
+                return "limited"
+            except AuthInvalidCredentialsError:
+                return "invalid"
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            outcomes = list(pool.map(attempt, range(12)))
+
+        # login_username_limit = 3: exactly three attempts may verify,
+        # every further concurrent attempt must be rate-limited.
+        self.assertEqual(outcomes.count("invalid"), 3)
+        self.assertEqual(outcomes.count("limited"), 9)
+        self.assertNotIn("ok", outcomes)
+
+    def test_concurrent_registrations_cannot_bypass_the_address_limit(self):
+        barrier = threading.Barrier(12)
+
+        def attempt(index: int) -> str:
+            barrier.wait()
+            try:
+                self.service.register(
+                    username=f"burst{index:02d}",
+                    password="correct-horse-battery",
+                    display_name=f"U{index}",
+                    remote_address="203.0.113.7",
+                )
+                return "ok"
+            except AuthRateLimitError:
+                return "limited"
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            outcomes = list(pool.map(attempt, range(12)))
+
+        # registration_address_limit = 5, counting successes and failures.
+        self.assertEqual(outcomes.count("ok"), 5)
+        self.assertEqual(outcomes.count("limited"), 7)
 
     def test_session_refresh_preserves_csrf_and_logout_revokes_session(self) -> None:
         issued = self._register()

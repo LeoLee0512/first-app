@@ -61,9 +61,22 @@ class Database:
         return statement if self.kind == "sqlite" else statement.replace("?", "%s")
 
     @contextmanager
-    def transaction(self) -> Iterator[Any]:
+    def transaction(self, *, immediate: bool = False) -> Iterator[Any]:
+        """Yield a DB-API connection; commit on success, rollback on error.
+
+        With ``immediate=True`` the transaction takes the database write lock
+        BEFORE any read inside it (SQLite ``BEGIN IMMEDIATE``; on PostgreSQL
+        an exclusive lock on ``login_attempts``), so a check-then-insert
+        gate (e.g. the login/register rate limits) is serialized across
+        concurrent threads instead of racing.
+        """
+
         connection = self._connect()
         try:
+            if immediate and self.kind == "sqlite":
+                connection.execute("BEGIN IMMEDIATE")
+            elif immediate and self.kind == "postgresql":
+                connection.execute("LOCK TABLE login_attempts IN EXCLUSIVE MODE")
             yield connection
             connection.commit()
         except Exception:

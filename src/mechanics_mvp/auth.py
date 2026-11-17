@@ -143,7 +143,7 @@ class AuthService:
         self._validate_password(password, normalized_username)
         address_hash = self._audit_hash("address", remote_address or "unknown")
         subject_hash = self._audit_hash("username", normalized_username)
-        self._check_registration_limit(address_hash)
+        attempt_id = self._reserve_registration_attempt(subject_hash, address_hash)
 
         avatar_content = self._validate_avatar(avatar) if avatar is not None else None
         user_id = str(uuid.uuid4())
@@ -179,12 +179,13 @@ class AuthService:
         except Exception as exc:
             if avatar_path:
                 self.avatar_file(avatar_path).unlink(missing_ok=True)
-            self._record_attempt("register", subject_hash, address_hash, False)
+            # The reserved attempt row stays success=0, i.e. a failure, which
+            # is what the old post-hoc recording did for failed registrations.
             if self.database.is_integrity_error(exc):
                 raise AuthConflictError("该账户名不可用。") from None
             raise
 
-        self._record_attempt("register", subject_hash, address_hash, True)
+        self._finalize_attempt(attempt_id, True)
         return self._issue_session(user_id)
 
     def login(
@@ -199,7 +200,7 @@ class AuthService:
             raise AuthInvalidCredentialsError("用户名或密码错误。")
         subject_hash = self._audit_hash("username", normalized_username)
         address_hash = self._audit_hash("address", remote_address or "unknown")
-        self._check_login_limit(subject_hash, address_hash)
+        attempt_id = self._reserve_login_attempt(subject_hash, address_hash)
         user = self.database.fetch_one(
             "SELECT * FROM users WHERE username = ?",
             (normalized_username,),
@@ -213,7 +214,7 @@ class AuthService:
             verified = False
 
         if not user or not verified or not bool(user["is_active"]):
-            self._record_attempt("login", subject_hash, address_hash, False)
+            # The reserved attempt row keeps success=0, recording the failure.
             raise AuthInvalidCredentialsError("用户名或密码错误。")
 
         if self._hasher.check_needs_rehash(stored_hash):
@@ -223,7 +224,7 @@ class AuthService:
                     "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
                     (self._hasher.hash(password), _iso(self._now()), user["id"]),
                 )
-        self._record_attempt("login", subject_hash, address_hash, True)
+        self._finalize_attempt(attempt_id, True)
         return self._issue_session(str(user["id"]))
 
     def session(self, session_token: str) -> SessionView | None:
@@ -421,66 +422,107 @@ class AuthService:
             raise AuthUnauthorizedError("请先登录。")
         return _public_user(row)
 
-    def _check_login_limit(self, subject_hash: str, address_hash: str) -> None:
+    def _reserve_login_attempt(self, subject_hash: str, address_hash: str) -> str:
+        """Atomically count the failure buckets and reserve one attempt slot.
+
+        The count and the reservation insert happen in one write-locked
+        transaction, so concurrent logins serialize on the gate instead of
+        all passing the check before any failure is recorded (the old
+        check-then-act race let twelve parallel wrong passwords through
+        with zero rate-limit responses). The reserved row counts as a
+        failure until `_finalize_attempt` flips it on success, so a burst
+        of concurrent logins on one account can be rejected slightly early —
+        always on the conservative side.
+        """
+
+        attempt_id = str(uuid.uuid4())
         since = _iso(self._now() - self.config.login_window)
-        subject_failures = self._attempt_count("login", "subject_hash", subject_hash, since)
-        address_failures = self._attempt_count("login", "address_hash", address_hash, since)
-        if (
-            subject_failures >= self.config.login_username_limit
-            or address_failures >= self.config.login_address_limit
-        ):
-            retry_after = max(1, int(self.config.login_window.total_seconds()))
-            raise AuthRateLimitError("尝试次数过多，请稍后再试。", retry_after=retry_after)
+        with self.database.transaction(immediate=True) as connection:
+            subject_failures = self._attempt_count_on(
+                connection, "login", "subject_hash", subject_hash, since
+            )
+            address_failures = self._attempt_count_on(
+                connection, "login", "address_hash", address_hash, since
+            )
+            if (
+                subject_failures >= self.config.login_username_limit
+                or address_failures >= self.config.login_address_limit
+            ):
+                raise AuthRateLimitError(
+                    "尝试次数过多，请稍后再试。",
+                    retry_after=max(1, int(self.config.login_window.total_seconds())),
+                )
+            self._insert_attempt_on(connection, attempt_id, "login", subject_hash, address_hash)
+        return attempt_id
 
-    def _check_registration_limit(self, address_hash: str) -> None:
+    def _reserve_registration_attempt(self, subject_hash: str, address_hash: str) -> str:
+        attempt_id = str(uuid.uuid4())
         since = _iso(self._now() - self.config.registration_window)
-        count = self.database.fetch_one(
-            """
-            SELECT COUNT(*) AS count FROM login_attempts
-            WHERE kind = ? AND address_hash = ? AND attempted_at >= ?
-            """,
-            ("register", address_hash, since),
-        )
-        if int(count["count"] if count else 0) >= self.config.registration_address_limit:
-            retry_after = max(1, int(self.config.registration_window.total_seconds()))
-            raise AuthRateLimitError("创建账户过于频繁，请稍后再试。", retry_after=retry_after)
+        with self.database.transaction(immediate=True) as connection:
+            count = self._attempt_count_on(
+                connection,
+                "register",
+                "address_hash",
+                address_hash,
+                since,
+                failures_only=False,
+            )
+            if count >= self.config.registration_address_limit:
+                raise AuthRateLimitError(
+                    "创建账户过于频繁，请稍后再试。",
+                    retry_after=max(1, int(self.config.registration_window.total_seconds())),
+                )
+            self._insert_attempt_on(connection, attempt_id, "register", subject_hash, address_hash)
+        return attempt_id
 
-    def _attempt_count(self, kind: str, column: str, value: str, since: str) -> int:
+    def _finalize_attempt(self, attempt_id: str, success: bool) -> None:
+        with self.database.transaction() as connection:
+            self.database.execute_on(
+                connection,
+                "UPDATE login_attempts SET success = ? WHERE id = ?",
+                (1 if success else 0, attempt_id),
+            )
+
+    def _attempt_count_on(
+        self,
+        connection: Any,
+        kind: str,
+        column: str,
+        value: str,
+        since: str,
+        *,
+        failures_only: bool = True,
+    ) -> int:
         if column not in {"subject_hash", "address_hash"}:
             raise ValueError("Invalid audit column")
-        row = self.database.fetch_one(
+        success_clause = " AND success = 0" if failures_only else ""
+        row = self.database.fetch_one_on(
+            connection,
             f"""
             SELECT COUNT(*) AS count FROM login_attempts
-            WHERE kind = ? AND success = 0 AND {column} = ? AND attempted_at >= ?
+            WHERE kind = ? AND {column} = ? AND attempted_at >= ?{success_clause}
             """,
             (kind, value, since),
         )
         return int(row["count"] if row else 0)
 
-    def _record_attempt(
+    def _insert_attempt_on(
         self,
+        connection: Any,
+        attempt_id: str,
         kind: str,
         subject_hash: str,
         address_hash: str,
-        success: bool,
     ) -> None:
-        with self.database.transaction() as connection:
-            self.database.execute_on(
-                connection,
-                """
-                INSERT INTO login_attempts (
-                    id, kind, subject_hash, address_hash, success, attempted_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(uuid.uuid4()),
-                    kind,
-                    subject_hash,
-                    address_hash,
-                    1 if success else 0,
-                    _iso(self._now()),
-                ),
-            )
+        self.database.execute_on(
+            connection,
+            """
+            INSERT INTO login_attempts (
+                id, kind, subject_hash, address_hash, success, attempted_at
+            ) VALUES (?, ?, ?, ?, 0, ?)
+            """,
+            (attempt_id, kind, subject_hash, address_hash, _iso(self._now())),
+        )
 
     def _audit_hash(self, category: str, value: str) -> str:
         message = f"{category}:{value}".encode("utf-8")
