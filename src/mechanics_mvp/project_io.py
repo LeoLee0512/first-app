@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
-from .models import Element, ElementLoad, Material, NodalLoad, Node, NodeCoupling, Project, Section
-from .preprocess import validate_project
+from .models import (
+    SPATIAL_DOFS,
+    Element,
+    ElementLoad,
+    Material,
+    NodalLoad,
+    Node,
+    NodeCoupling,
+    Project,
+    Section,
+)
+from .preprocess import ValidationError, validate_project
 from .units import to_si
+
+
+_RESTRAINT_NAME_SPLIT = re.compile(r"[,\s，、]+")
 
 
 def load_project(path: str | Path) -> Project:
@@ -20,17 +34,17 @@ def load_project(path: str | Path) -> Project:
 
 
 def project_from_dict(raw: dict[str, Any]) -> Project:
-    materials = tuple(_parse_material(item) for item in raw.get("materials", ()))
-    sections = tuple(_parse_section(item) for item in raw.get("sections", ()))
-    nodes = tuple(_parse_node(item) for item in raw.get("nodes", ()))
-    elements = tuple(_parse_element(item) for item in raw.get("elements", ()))
+    materials = tuple(_parse_material(item) for item in _optional_list(raw, "materials"))
+    sections = tuple(_parse_section(item) for item in _optional_list(raw, "sections"))
+    nodes = tuple(_parse_node(item) for item in _optional_list(raw, "nodes"))
+    elements = tuple(_parse_element(item) for item in _optional_list(raw, "elements"))
+    couplings = tuple(_parse_coupling(item) for item in _optional_list(raw, "couplings"))
 
-    raw_loads = raw.get("loads", {})
-    nodal_loads = tuple(_parse_nodal_load(item) for item in raw_loads.get("nodes", ()))
-    element_loads = tuple(_parse_element_load(item) for item in raw_loads.get("elements", ()))
+    raw_loads = _optional_mapping(raw, "loads")
+    nodal_loads = tuple(_parse_nodal_load(item) for item in _optional_list(raw_loads, "nodes"))
+    element_loads = tuple(_parse_element_load(item) for item in _optional_list(raw_loads, "elements"))
 
-    metadata = {str(key): str(value) for key, value in raw.get("metadata", {}).items()}
-    couplings = tuple(_parse_coupling(item) for item in raw.get("couplings", ()))
+    metadata = {str(key): str(value) for key, value in _optional_mapping(raw, "metadata").items()}
     return Project(
         nodes=nodes,
         materials=materials,
@@ -47,7 +61,7 @@ def _parse_coupling(raw: dict[str, Any]) -> NodeCoupling:
     return NodeCoupling(
         node_i=str(raw["node_i"]),
         node_j=str(raw["node_j"]),
-        dofs=tuple(str(dof) for dof in raw.get("dofs", ("ux", "uy"))),
+        dofs=tuple(str(dof) for dof in _optional_list(raw, "dofs") or ("ux", "uy")),
     )
 
 
@@ -128,29 +142,68 @@ def _parse_element_load(raw: dict[str, Any]) -> ElementLoad:
         qx_j=_optional_si(raw, "qx_j", "N/m"),
         qy_i=_optional_si(raw, "qy_i", "N/m"),
         qy_j=_optional_si(raw, "qy_j", "N/m"),
-        qx_coefficients=_parse_coefficients(raw.get("qx_coefficients", ()), "N/m"),
-        qy_coefficients=_parse_coefficients(raw.get("qy_coefficients", ()), "N/m"),
+        qx_coefficients=_parse_coefficients(_optional_list(raw, "qx_coefficients"), "N/m"),
+        qy_coefficients=_parse_coefficients(_optional_list(raw, "qy_coefficients"), "N/m"),
         fz=to_si(raw.get("fz", 0.0), default_unit=force_unit),
     )
 
 
 def _parse_restraints(raw: Any) -> tuple[bool, bool, bool]:
-    if isinstance(raw, dict):
-        return (
-            bool(raw.get("ux", False)),
-            bool(raw.get("uy", False)),
-            bool(raw.get("rz", False)),
-        )
-
-    names = {str(item) for item in raw}
+    # Spatial names (uz/rx/ry) are accepted vocabulary — they also feed the
+    # 3D parser — but only ux/uy/rz mean anything to the 2D solver.
+    names = _restraint_names(raw, SPATIAL_DOFS)
     return ("ux" in names, "uy" in names, "rz" in names)
 
 
 def _parse_restraints_3d(raw: Any) -> tuple[bool, ...]:
+    names = _restraint_names(raw, SPATIAL_DOFS)
+    return tuple(dof in names for dof in SPATIAL_DOFS)
+
+
+def _restraint_names(raw: Any, allowed: tuple[str, ...]) -> set[str]:
+    """Parse restraints given as a name list, a name map, or a separated string.
+
+    Unknown DOF names raise instead of being dropped, so a typo can never
+    silently delete a support (e.g. a roller written as `"uy"` used to
+    resolve to no restraint at all).
+    """
+
+    if raw is None:
+        return set()
+    if isinstance(raw, str):
+        names = {part for part in _RESTRAINT_NAME_SPLIT.split(raw.strip()) if part}
+    elif isinstance(raw, dict):
+        names = {str(key) for key in raw}
+    elif isinstance(raw, (list, tuple)):
+        names = {str(item) for item in raw}
+    else:
+        raise ValidationError("约束(restraints)必须是数组、对象或以逗号分隔的字符串。")
+    unknown = names.difference(allowed)
+    if unknown:
+        raise ValidationError(
+            f"未知约束自由度：{', '.join(sorted(unknown))}；可用值：{', '.join(allowed)}。"
+        )
     if isinstance(raw, dict):
-        return tuple(bool(raw.get(dof, False)) for dof in ("ux", "uy", "uz", "rx", "ry", "rz"))
-    names = {str(item) for item in raw}
-    return tuple(dof in names for dof in ("ux", "uy", "uz", "rx", "ry", "rz"))
+        return {str(key) for key, value in raw.items() if value}
+    return names
+
+
+def _optional_list(raw: dict[str, Any], key: str) -> Any:
+    value = raw.get(key)
+    if value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise ValidationError(f"字段 {key!r} 必须是数组。")
+    return value
+
+
+def _optional_mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:
+    value = raw.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValidationError(f"字段 {key!r} 必须是 JSON 对象。")
+    return value
 
 
 def _optional_si(raw: dict[str, Any], key: str, default_unit: str) -> float | None:
