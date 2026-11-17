@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import fields
 from collections import Counter, defaultdict
 
 from .models import DOFS, Project
@@ -29,6 +30,14 @@ MAX_SOLVE_DOFS = MAX_SOLVE_NODES * len(DOFS)
 
 
 def validate_project(project: Project) -> None:
+    for collection in (project.nodes, project.materials, project.sections, project.nodal_loads, project.element_loads, project.couplings):
+        for item in collection:
+            for field in fields(item):
+                value = getattr(item, field.name)
+                values = value if isinstance(value, tuple) else (value,)
+                if any(isinstance(v, (int, float)) and not math.isfinite(v) for v in values):
+                    raise ValidationError(f"Non-finite physical value: {field.name}.")
+
     node_count = len(project.nodes)
     dof_count = node_count * len(DOFS)
     if node_count > MAX_SOLVE_NODES or dof_count > MAX_SOLVE_DOFS:
@@ -86,6 +95,16 @@ def validate_project(project: Project) -> None:
             raise ValidationError(f"Element {element.id} is not a frame and cannot carry moment-release flags.")
         connected[element.node_i] += 1
         connected[element.node_j] += 1
+
+    for coupling in project.couplings:
+        if coupling.node_i not in nodes or coupling.node_j not in nodes:
+            raise ValidationError("Node coupling references a missing node.")
+        if coupling.node_i == coupling.node_j:
+            raise ValidationError("Node coupling must connect two different nodes.")
+        if not coupling.dofs or any(dof not in ("ux", "uy") for dof in coupling.dofs):
+            raise ValidationError("Node couplings currently support only ux and uy.")
+        if len(set(coupling.dofs)) != len(coupling.dofs):
+            raise ValidationError("Node coupling contains a duplicate DOF.")
 
     for node in project.nodes:
         if not math.isfinite(node.support_angle):

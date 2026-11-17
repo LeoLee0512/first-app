@@ -625,7 +625,8 @@ def _append_stress_strain(
         c = math.sqrt(max(section.area, 1e-30)) / 2
         for row in diagram:
             stress = float(row.get("n", 0.0)) / max(section.area, 1e-30)
-            stress += float(row.get("m", 0.0)) * c / max(section.inertia, 1e-30)
+            bending = float(row.get("m", 0.0)) * c / max(section.inertia, 1e-30)
+            stress = max((stress + bending, stress - bending), key=abs)
             rows.append(
                 {
                     "element": element_id,
@@ -716,7 +717,9 @@ def _sorted_items(values: dict[str, Any]) -> list[tuple[str, Any]]:
 
 def _fmt(value: Any) -> str:
     numeric = float(value or 0.0)
-    if not math.isfinite(numeric) or abs(numeric) < 1e-12:
+    if not math.isfinite(numeric):
+        raise ValueError("Report contains a non-finite result.")
+    if abs(numeric) < 1e-12:
         return "0"
     magnitude = abs(numeric)
     if magnitude >= 1e6 or magnitude < 1e-5:

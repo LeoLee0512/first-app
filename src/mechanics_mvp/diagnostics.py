@@ -118,20 +118,12 @@ def diagnose_project(project: Project) -> ModelDiagnostics:
     # This is topological screening, not a stiffness-rank stability proof.
     # It does not see truss hinges or moment releases, so it must not be
     # reported as the same judgement as classify_system when those exist.
-    determinacy_index = restrained_dof_count + 3 * len(project.elements) - 3 * len(project.nodes)
+    coupled_dof_count = sum(len(coupling.dofs) for coupling in project.couplings)
+    determinacy_index = restrained_dof_count + coupled_dof_count + 3 * len(project.elements) - 3 * len(project.nodes)
     index_ignores_hinges = any(
         element.type == "truss" or element.moment_release_i or element.moment_release_j
         for element in project.elements
     )
-
-    if free_dof_count <= 0:
-        issues.append(
-            DiagnosticIssue(
-                level="error",
-                code="no_free_dof",
-                message="Model has no free degrees of freedom.",
-            )
-        )
 
     if index_ignores_hinges:
         issues.append(

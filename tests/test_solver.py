@@ -83,6 +83,26 @@ class SolverTests(unittest.TestCase):
         self.assertAlmostEqual(result.reactions["A"]["fy"], 20_000.0 / 3.0, places=5)
         self.assertAlmostEqual(result.reactions["B"]["fy"], 40_000.0 / 3.0, places=5)
 
+    def test_linear_load_diagram_integrates_exactly(self):
+        length = 2.0
+        peak_load = -10_000.0
+        project = Project(
+            nodes=(Node("A", 0.0, 0.0, (True, True, True)), Node("B", length, 0.0)),
+            materials=(Material("steel", 200e9),),
+            sections=(Section("section", 0.01, 8e-5),),
+            elements=(Element("E1", "A", "B", "steel", "section"),),
+            element_loads=(ElementLoad("E1", "linear_local", qy_i=0.0, qy_j=peak_load),),
+        )
+
+        result = Frame2DSolver().solve(project)
+
+        rows = result.element_diagrams["E1"]
+        self.assertAlmostEqual(rows[-1]["m"], 0.0, places=8)
+        ratio = 0.5
+        midpoint = next(row for row in rows if row["ratio"] == ratio)
+        expected = peak_load * length**2 * (1 / 3 - ratio / 2 + ratio**3 / 6)
+        self.assertAlmostEqual(midpoint["m"], expected, places=7)
+
     def test_polynomial_element_load_supports_curve_input(self):
         project = Project(
             nodes=(

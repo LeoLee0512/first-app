@@ -11,6 +11,7 @@ from dataclasses import asdict
 from .diagnostics import diagnose_project
 from .models import AnalysisResult, Project
 from .solver import Frame2DSolver, SolverError
+from .space3d import Frame3DSolver
 
 
 class PinnSolverPlaceholder:
@@ -27,13 +28,14 @@ class PinnSolverPlaceholder:
 
 SOLVER_BACKENDS = {
     "frame2d": Frame2DSolver(),
+    "frame3d": Frame3DSolver(),
     "pinn": PinnSolverPlaceholder(),
 }
 
 
 def solve_with_backend(project: Project, backend: str = "frame2d") -> AnalysisResult:
-    diagnostics = diagnose_project(project)
-    fatal_issues = [issue for issue in diagnostics.issues if issue.level == "error"]
+    diagnostics = None if backend == "frame3d" else diagnose_project(project)
+    fatal_issues = [] if diagnostics is None else [issue for issue in diagnostics.issues if issue.level == "error"]
     if fatal_issues:
         messages = "; ".join(issue.message for issue in fatal_issues)
         raise SolverError(f"Model diagnostics failed: {messages}")
@@ -46,7 +48,8 @@ def solve_with_backend(project: Project, backend: str = "frame2d") -> AnalysisRe
 
     result = solver.solve(project)
     summary = dict(result.summary)
-    summary["diagnostics"] = asdict(diagnostics)
+    if diagnostics is not None:
+        summary["diagnostics"] = asdict(diagnostics)
     return AnalysisResult(
         displacements=result.displacements,
         reactions=result.reactions,

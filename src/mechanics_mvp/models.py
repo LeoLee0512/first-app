@@ -7,6 +7,7 @@ from typing import Any
 
 
 DOFS = ("ux", "uy", "rz")
+SPATIAL_DOFS = ("ux", "uy", "uz", "rx", "ry", "rz")
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,8 @@ class Node:
     # 0 means the ground lies below the node (support local y' = global y);
     # `restraints` ux/uy are applied along the rotated support axes x'/y'.
     support_angle: float = 0.0
+    z: float = 0.0
+    restraints_3d: tuple[bool, ...] = (False,) * 6
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,9 @@ class Section:
     area: float
     inertia: float
     section_modulus: float | None = None
+    inertia_y: float | None = None
+    inertia_z: float | None = None
+    torsion_constant: float | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +60,9 @@ class NodalLoad:
     fx: float = 0.0
     fy: float = 0.0
     mz: float = 0.0
+    fz: float = 0.0
+    mx: float = 0.0
+    my: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -72,6 +81,14 @@ class ElementLoad:
     qy_j: float | None = None
     qx_coefficients: tuple[float, ...] = ()
     qy_coefficients: tuple[float, ...] = ()
+    fz: float = 0.0
+
+
+@dataclass(frozen=True)
+class NodeCoupling:
+    node_i: str
+    node_j: str
+    dofs: tuple[str, ...] = ("ux", "uy")
 
 
 @dataclass(frozen=True)
@@ -83,6 +100,7 @@ class Project:
     nodal_loads: tuple[NodalLoad, ...] = ()
     element_loads: tuple[ElementLoad, ...] = ()
     metadata: dict[str, str] = field(default_factory=dict)
+    couplings: tuple[NodeCoupling, ...] = ()
 
 
 @dataclass(frozen=True)

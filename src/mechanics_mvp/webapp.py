@@ -481,7 +481,7 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
         status: int = 200,
         headers: dict[str, str] | None = None,
     ) -> None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        data = json.dumps(payload, ensure_ascii=False, allow_nan=False).encode("utf-8")
         response_headers = {
             "Cache-Control": "no-store",
             "X-Content-Type-Options": "nosniff",

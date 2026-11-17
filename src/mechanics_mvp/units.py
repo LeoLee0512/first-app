@@ -48,6 +48,40 @@ UNIT_FACTORS: dict[str, float] = {
     "mm^4": 1e-12,
 }
 
+UNIT_DIMENSIONS: dict[str, str] = {
+    "": "dimensionless",
+    "1": "dimensionless",
+    "N": "force",
+    "kN": "force",
+    "MN": "force",
+    "m": "length",
+    "cm": "length",
+    "mm": "length",
+    "rad": "angle",
+    "deg": "angle",
+    "Pa": "pressure",
+    "kPa": "pressure",
+    "MPa": "pressure",
+    "GPa": "pressure",
+    "N*m": "moment",
+    "kN*m": "moment",
+    "N/m": "force_per_length",
+    "kN/m": "force_per_length",
+    "MN/m": "force_per_length",
+    "N/mm": "force_per_length",
+    "N*m/m": "force",
+    "kN*m/m": "force",
+    "m^2": "area",
+    "cm^2": "area",
+    "mm^2": "area",
+    "m^3": "volume",
+    "cm^3": "volume",
+    "mm^3": "volume",
+    "m^4": "inertia",
+    "cm^4": "inertia",
+    "mm^4": "inertia",
+}
+
 _QUANTITY_RE = re.compile(
     r"^\s*(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
     r"(?:\s*(?P<unit>[A-Za-z0-9_*/^.\-]+))?\s*$"
@@ -74,15 +108,31 @@ def to_si(quantity: Any, *, default_unit: str = "") -> float:
         if not match:
             raise UnitError(f"Invalid quantity string: {quantity!r}")
         unit = match.group("unit") or default_unit
-        return float(match.group("value")) * factor(unit)
+        return float(match.group("value")) * _quantity_factor(unit, default_unit)
 
     if isinstance(quantity, dict):
         if "value" not in quantity:
             raise UnitError(f"Quantity object is missing 'value': {quantity!r}")
         unit = str(quantity.get("unit", default_unit))
+        _quantity_factor(unit, default_unit)
         return to_si(quantity["value"], default_unit=unit)
 
     raise UnitError(f"Unsupported quantity type: {type(quantity).__name__}")
+
+
+def _quantity_factor(unit: str, expected_unit: str) -> float:
+    conversion = factor(unit)
+    normalized = normalize_unit(unit)
+    expected = normalize_unit(expected_unit)
+    if expected and normalized != expected:
+        actual_dimension = UNIT_DIMENSIONS[normalized]
+        expected_dimension = UNIT_DIMENSIONS[expected]
+        if actual_dimension != expected_dimension:
+            raise UnitError(
+                f"Incompatible unit dimension: {normalized!r} is {actual_dimension}, "
+                f"expected {expected_dimension} for {expected!r}."
+            )
+    return conversion
 
 
 def factor(unit: str) -> float:

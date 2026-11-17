@@ -102,8 +102,8 @@ class PointElementLoadTests(unittest.TestCase):
 
         self.assertAlmostEqual(reaction_a + reaction_b, 0.0)
         self.assertAlmostEqual(reaction_b * length + moment, 0.0)
-        before = result.element_diagrams["E1"][9]
-        at_load = result.element_diagrams["E1"][10]
+        before = max((row for row in result.element_diagrams["E1"] if row["x"] < length / 2), key=lambda row: row["x"])
+        at_load = next(row for row in result.element_diagrams["E1"] if row["x"] == length / 2)
         expected_change = reaction_a * (at_load["x"] - before["x"]) - moment
         self.assertAlmostEqual(at_load["m"] - before["m"], expected_change)
 
@@ -160,6 +160,39 @@ class PointElementLoadTests(unittest.TestCase):
                     nodal_result.reactions["A"].get("fy", 0.0),
                     element_result.reactions["A"].get("fy", 0.0),
                 )
+
+    def test_element_with_interior_couple_is_not_a_zero_force_element(self):
+        project = frame_project(
+            (Node("A", 0.0, 0.0, (True, True, False)), Node("B", 2.0, 0.0, (False, True, False))),
+            element_loads=(
+                ElementLoad("E1", "point_global", ratio=0.41, mz=1_000.0),
+                ElementLoad("E1", "point_global", ratio=0.44, mz=-1_000.0),
+            ),
+        )
+
+        result = Frame2DSolver().solve(project)
+
+        self.assertAlmostEqual(max(abs(row["m"]) for row in result.element_diagrams["E1"]), 1_000.0)
+        self.assertNotIn("E1", result.summary["zero_force_elements"])
+
+    def test_endpoint_element_load_has_same_flexibility_as_nodal_load(self):
+        nodes = (Node("A", 0.0, 0.0, (True, True, True)), Node("B", 2.0, 0.0))
+        nodal = frame_project(nodes, nodal_loads=(NodalLoad("B", fy=-1_000.0),))
+        element = frame_project(
+            nodes,
+            element_loads=(ElementLoad("E1", "point_global", ratio=1.0, fy=-1_000.0),),
+        )
+
+        nodal_result = Frame2DSolver().solve(nodal)
+        element_result = Frame2DSolver().solve(element)
+
+        self.assertEqual(
+            nodal_result.summary["load_point_flexibility"],
+            element_result.summary["load_point_flexibility"],
+        )
+        flexibility = element_result.summary["load_point_flexibility"]
+        self.assertEqual(len(flexibility), 1)
+        self.assertAlmostEqual(flexibility[0]["flexibility"], 8.0 / (3 * 200e9 * 8e-5))
 
 
 if __name__ == "__main__":
