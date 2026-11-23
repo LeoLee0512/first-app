@@ -19,16 +19,15 @@ function check(callback) {
 
 check(() => {
   assert.match(html, /<title>Computational Mechanics Solver v1\.5\.1<\/title>/);
-  assert.match(html, /id="releaseVersion"[^>]*class="[^"]*rainbow-animated[^"]*"[^>]*>v1\.5\.1</);
-  assert.match(css, /\.rainbow-animated\s*\{[^}]*animation:\s*rainbowFlow/s);
+  assert.match(html, /id="releaseVersion"[^>]*>v1\.5\.1</);
+  assert.doesNotMatch(css, /@keyframes\s+rainbowFlow/);
+  assert.doesNotMatch(css, /@keyframes\s+atomOrbit/);
 });
 
 check(() => {
   assert.match(html, /id="announcementButton"/);
   assert.match(html, /aria-label="查看 v1\.5\.1 更新公告"/);
   assert.match(html, /aria-controls="announcementDialog"/);
-  assert.match(html, /class="li-atom"/);
-  assert.match(css, /@keyframes atomOrbit/);
 });
 
 check(() => {
@@ -38,9 +37,7 @@ check(() => {
   assert.match(html, /圆—圆、圆—地面接触/);
   assert.match(html, /受控 AST 与白名单求值/);
   assert.match(html, /cms-dynamics-project@2/);
-  assert.match(html, /v1\.5\.0 新功能请参考本更新公告/);
   assert.match(html, /仅作为历史版本说明书继续提供下载/);
-  assert.match(html, /不会自动推送 GitHub/);
   assert.match(html, /轨道对象尚未与自由\/接触对象进入同一碰撞世界/);
   assert.match(html, /不继续剩余时长的自由飞行/);
   assert.match(html, /不应用于未经独立复核的工程安全决策/);
@@ -61,8 +58,6 @@ check(() => {
     assert.match(card[0], /用户与技术说明书/);
     assert.match(card[0], /v1\.3\.2 · 历史版本/);
     assert.match(card[0], /适用于 v1\.3\.2 的历史版本/);
-    assert.match(card[0], /manual-cube-icon/);
-    assert.equal((card[0].match(/cube-edge/g) || []).length, 9);
   }
 });
 
@@ -84,22 +79,23 @@ check(() => {
 
 check(() => {
   assert.doesNotMatch(html, /当前主身份|当前身份/);
-  assert.match(css, /\.manual-cube-icon \.edge-1/);
-  assert.match(css, /\.manual-cube-icon \.edge-9/);
+  // Minimalist dual-theme palette tokens (Ink Obsidian + Coral dark, Frosted Alabaster + Warm Amber light)
+  assert.match(css, /:root\s*\{[^}]*--bg:\s*#eceae3;/s);
+  assert.match(css, /:root\s*\{[^}]*--accent:\s*#e0a62e;/s);
+  assert.match(css, /body\.dark-theme\s*\{[^}]*--bg:\s*#0e0e10;/s);
+  assert.match(css, /body\.dark-theme\s*\{[^}]*--accent:\s*#e87a74;/s);
 });
 
 check(() => {
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
-  assert.match(css, /\.atom-orbit[\s\S]*animation:\s*none !important/);
-  assert.match(css, /\.manual-download-card[\s\S]*transition:\s*none !important/);
-  assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.welcome-content[\s\S]*padding:\s*112px 22px 22px/);
+  assert.match(css, /transition:\s*none !important/);
+  assert.match(css, /@media \(max-width: 820px\)/);
 });
 
 check(() => {
   assert.match(html, /Leo\s+<span class="li-ion">Li<sup>\+<\/sup><\/span>\s+Studio出品/);
   assert.match(css, /\.li-ion\s*\{[\s\S]*position:\s*relative[\s\S]*padding-right:\s*0\.34em/);
   assert.match(css, /\.li-ion sup\s*\{[\s\S]*position:\s*absolute[\s\S]*top:\s*-0\.34em/);
-  assert.match(css, /\.li-nucleus sup\s*\{[\s\S]*position:\s*absolute[\s\S]*right:\s*3px/);
 });
 
 console.log(`release-ui: ${checks} checks passed`);

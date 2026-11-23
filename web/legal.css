@@ -1,47 +1,89 @@
 :root {
   color-scheme: dark;
-  font-family: "Segoe UI", Arial, sans-serif;
-  background: #030506;
-  color: #edf5f7;
+  --bg: #0e0e10;
+  --surface: #161618;
+  --line: #28282f;
+  --ink: #ececef;
+  --ink-secondary: #a1a1aa;
+  --muted: #7d7d87;
+  --accent: #e87a74;
+  --font-sans: "Inter", "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
-  background: #030506 url("/static/welcome-bg.jpg") center / cover fixed;
+  background-color: var(--bg);
+  background-image:
+    linear-gradient(to right, #1b1b20 1px, transparent 1px),
+    linear-gradient(to bottom, #1b1b20 1px, transparent 1px);
+  background-size: 28px 28px;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
 }
 
 main {
-  width: min(760px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: 64px 0 80px;
-  text-shadow: 0 1px 8px #000;
+  width: min(720px, calc(100% - 32px));
+  margin: 48px auto 64px;
+  padding: 36px clamp(20px, 4vw, 44px);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
 }
 
-h1,
-h2 {
-  letter-spacing: 0;
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 h1 {
-  font-size: clamp(32px, 6vw, 56px);
+  margin: 0 0 8px;
+  font-size: clamp(24px, 4vw, 32px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 h2 {
-  margin-top: 32px;
-  color: #77d4ff;
-  font-size: 20px;
+  margin: 28px 0 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
 }
 
 p {
-  color: #d5e0e4;
-  line-height: 1.8;
+  margin: 0 0 10px;
+  color: var(--ink-secondary);
 }
 
-.eyebrow,
 a {
-  color: #89e8d6;
-  font-weight: 800;
+  display: inline-block;
+  margin-top: 20px;
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--accent);
+  font-weight: 500;
+  text-decoration: none;
+}
+
+a:hover {
+  border-color: var(--accent);
+  background: rgba(232, 122, 116, 0.12);
 }
 
 sup {

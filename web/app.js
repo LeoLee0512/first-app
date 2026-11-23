@@ -8,9 +8,13 @@ const toast = document.getElementById("toast");
 const dynamicsCanvas = document.getElementById("dynamicsCanvas");
 const dynamicsCtx = dynamicsCanvas ? dynamicsCanvas.getContext("2d") : null;
 const dynamicsToast = document.getElementById("dynamicsToast");
+const AUTH_THEME_KEY = "cms_theme";
+const CANVAS_MONO_FONT = "'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace";
+const CANVAS_SANS_FONT = "'Inter', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif";
 
 const els = {
   welcomeScreen: document.getElementById("welcomeScreen"),
+  welcomeThemeButton: document.getElementById("welcomeThemeButton"),
   announcementButton: document.getElementById("announcementButton"),
   announcementDialog: document.getElementById("announcementDialog"),
   announcementCloseButton: document.getElementById("announcementCloseButton"),
@@ -47,6 +51,18 @@ const els = {
   mainUserName: document.getElementById("mainUserName"),
   mainUserTier: document.getElementById("mainUserTier"),
   dynamicsShell: document.getElementById("dynamicsShell"),
+  dynamicsThemeButton: document.getElementById("dynamicsThemeButton"),
+  staticCoords: document.getElementById("staticCoords"),
+  dynamicsCoords: document.getElementById("dynamicsCoords"),
+  diagramDrawer: document.getElementById("diagramDrawer"),
+  diagramDrawerToggle: document.getElementById("diagramDrawerToggle"),
+  diagramModeTabs: document.getElementById("diagramModeTabs"),
+  resultStructured: document.getElementById("resultStructured"),
+  resultViewTableBtn: document.getElementById("resultViewTableBtn"),
+  resultViewTextBtn: document.getElementById("resultViewTextBtn"),
+  copyResultButton: document.getElementById("copyResultButton"),
+  teeDepthField: document.getElementById("teeDepthField"),
+  arcParamsRow: document.getElementById("arcParamsRow"),
   dynamicsUserAvatar: document.getElementById("dynamicsUserAvatar"),
   dynamicsUserName: document.getElementById("dynamicsUserName"),
   dynamicsUserTier: document.getElementById("dynamicsUserTier"),
@@ -158,7 +174,7 @@ const els = {
   savePasswordButton: document.getElementById("savePasswordButton"),
   logoutButton: document.getElementById("logoutButton"),
   settingsMessage: document.getElementById("settingsMessage"),
-  toolButtons: [...document.querySelectorAll(".tool-button")],
+  toolButtons: [...document.querySelectorAll(".tool-button[data-tool]")],
   selectionMode: document.getElementById("selectionMode"),
   supportPreset: document.getElementById("supportPreset"),
   gridToggle: document.getElementById("gridToggle"),
@@ -282,6 +298,8 @@ const state = {
     arcAngle: 45,
   },
   solveOptions: ["determinacy", "system", "internal", "moment", "shear", "axial", "displacement", "reaction", "danger"],
+  diagramFilterMode: "all",
+  resultViewMode: "table",
   activeModule: "welcome",
   dynamics: {
     model: "independent-particle2d",
@@ -483,13 +501,13 @@ function showAuthMode(mode) {
 
 function resetAuthChoice() {
   els.authChoicePanel.classList.remove("hidden");
-  els.authPanel.classList.add("hidden");
-  els.loginCard.classList.add("hidden");
+  els.authPanel.classList.remove("hidden");
+  els.loginCard.classList.remove("hidden");
   els.registerCard.classList.add("hidden");
-  els.showLoginButton.classList.remove("active");
+  els.showLoginButton.classList.add("active");
   els.showRegisterButton.classList.remove("active");
-  els.startAppButton.classList.remove("hidden");
-  if (els.moduleChoicePanel) els.moduleChoicePanel.classList.add("hidden");
+  els.startAppButton.classList.add("hidden");
+  if (els.moduleChoicePanel) els.moduleChoicePanel.classList.remove("hidden");
 }
 
 function setCurrentUser(user) {
@@ -499,8 +517,8 @@ function setCurrentUser(user) {
   els.loginCard.classList.add("hidden");
   els.registerCard.classList.add("hidden");
   els.startPanel.classList.remove("hidden");
-  els.startAppButton.classList.remove("hidden");
-  if (els.moduleChoicePanel) els.moduleChoicePanel.classList.add("hidden");
+  els.startAppButton.classList.add("hidden");
+  if (els.moduleChoicePanel) els.moduleChoicePanel.classList.remove("hidden");
   refreshCurrentUserDisplay(user);
   setAuthMessage(`已登录：${user.username}`);
 }
@@ -715,7 +733,7 @@ function completeLogout() {
   els.startPanel.classList.add("hidden");
   if (els.moduleChoicePanel) els.moduleChoicePanel.classList.add("hidden");
   state.activeModule = "welcome";
-  document.body.classList.remove("dynamics-active");
+  document.body.classList.remove("dynamics-active", "workbench-active");
   resetAuthChoice();
   showDefaultAvatar(els.registerAvatarPreview);
   refreshCurrentUserDisplay(null);
@@ -756,6 +774,7 @@ function launchStaticApplication() {
   cancelDynamicsFieldPlacement({ silent: true });
   state.activeModule = "static";
   document.body.classList.remove("dynamics-active");
+  document.body.classList.add("workbench-active");
   cancelDynamicsAnimation();
   els.welcomeScreen.classList.add("hidden");
   els.appShell.classList.remove("app-hidden");
@@ -771,7 +790,7 @@ function launchDynamicsApplication() {
     return;
   }
   state.activeModule = "dynamics";
-  document.body.classList.add("dynamics-active");
+  document.body.classList.add("dynamics-active", "workbench-active");
   els.welcomeScreen.classList.add("hidden");
   els.appShell.classList.add("app-hidden");
   els.dynamicsShell.classList.remove("app-hidden");
@@ -806,6 +825,8 @@ function restore(serialized) {
   state.selection = { nodes: [], elements: [] };
   state.pendingNode = null;
   state.result = null;
+  els.resultText.textContent = "暂无结果";
+  renderStructuredResult(null, null, "whole");
   syncUi();
   draw();
 }
@@ -816,6 +837,8 @@ function mutate(change) {
   state.redoStack = [];
   change();
   state.result = null;
+  els.resultText.textContent = "暂无结果";
+  renderStructuredResult(null, null, "whole");
   syncUi();
   draw();
 }
@@ -919,6 +942,12 @@ function activateTool(tool) {
   draw();
 }
 
+function syncElementDialogFields() {
+  const geom = els.elementGeometry ? els.elementGeometry.value : "straight";
+  if (els.teeDepthField) els.teeDepthField.classList.toggle("hidden", geom !== "tee");
+  if (els.arcParamsRow) els.arcParamsRow.classList.toggle("hidden", geom !== "arc");
+}
+
 function openElementDialog() {
   els.elementGeometry.value = state.elementGeometry;
   els.sectionShape.value = state.elementDefaults.sectionShape;
@@ -929,6 +958,7 @@ function openElementDialog() {
   els.teeDepth.value = state.elementDefaults.teeDepth;
   els.elementCurvature.value = state.elementDefaults.curvature;
   els.elementArcAngle.value = state.elementDefaults.arcAngle;
+  syncElementDialogFields();
   if (!els.elementDialog.open) els.elementDialog.showModal();
 }
 
@@ -948,16 +978,45 @@ function applyElementSettings() {
   activateTool("element");
 }
 
+const canvasMetrics = {
+  main: { width: 1200, height: 760, dpr: 1 },
+  diagram: { width: 1200, height: 240, dpr: 1 },
+  dynamics: { width: 1200, height: 680, dpr: 1 },
+};
+
+function syncHiDpiCanvas(target, key, minWidth = 1, minHeight = 1) {
+  if (!target) return { width: minWidth, height: minHeight, dpr: 1, changed: false };
+  const rect = target.getBoundingClientRect();
+  if (rect.width < 2 || rect.height < 2) return { ...canvasMetrics[key], changed: false };
+  const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+  const width = Math.max(minWidth, Math.floor(rect.width));
+  const height = Math.max(minHeight, Math.floor(rect.height));
+  const backingWidth = Math.max(1, Math.round(width * dpr));
+  const backingHeight = Math.max(1, Math.round(height * dpr));
+  const prev = canvasMetrics[key];
+  const changed =
+    target.width !== backingWidth ||
+    target.height !== backingHeight ||
+    prev.width !== width ||
+    prev.height !== height ||
+    prev.dpr !== dpr;
+  if (changed) {
+    target.width = backingWidth;
+    target.height = backingHeight;
+    canvasMetrics[key] = { width, height, dpr };
+  }
+  return { width, height, dpr, changed };
+}
+
 function resizeCanvas() {
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = Math.max(760, Math.floor(rect.width));
-  canvas.height = Math.max(500, Math.floor(rect.height));
-  const diagramRect = diagramCanvas.getBoundingClientRect();
-  diagramCanvas.width = Math.max(760, Math.floor(diagramRect.width));
-  diagramCanvas.height = Math.max(300, Math.floor(diagramRect.height));
-  if (!state.originInitialized) {
-    state.origin = { x: 70, y: canvas.height - 58 };
+  const prevHeight = canvasMetrics.main.height;
+  const main = syncHiDpiCanvas(canvas, "main", 240, 200);
+  syncHiDpiCanvas(diagramCanvas, "diagram", 240, 140);
+  if (!state.originInitialized && main.width > 10 && main.height > 10) {
+    state.origin = { x: Math.round(Math.min(110, main.width * 0.14)), y: Math.round(main.height * 0.68) };
     state.originInitialized = true;
+  } else if (state.originInitialized && main.changed && prevHeight > 10) {
+    state.origin.y = Math.round(state.origin.y + (main.height - prevHeight) * 0.72);
   }
   draw();
 }
@@ -1050,7 +1109,7 @@ function supportAtScreen(x, y) {
 }
 
 function supportSymbolSize() {
-  return Math.max(42, Math.min(110, state.pxPerMeter * 0.95));
+  return Math.max(24, Math.min(34, state.pxPerMeter * 0.48));
 }
 
 function supportHitDistance(node, point) {
@@ -1062,32 +1121,34 @@ function supportHitDistance(node, point) {
   const toNode = Math.hypot(screen.x - point.x, screen.y - point.y);
   let best = toNode;
   if (support.type === "ground") {
-    const halfWidth = size * 0.62;
-    best = Math.min(best, pointToSegmentDistance(point, groundStart(screen, normal, halfWidth), groundEnd(screen, normal, halfWidth)));
+    const halfWidth = size * 0.64;
+    const base = { x: screen.x - dir.x * 5, y: screen.y - dir.y * 5 };
+    best = Math.min(best, pointToSegmentDistance(point, groundStart(base, normal, halfWidth), groundEnd(base, normal, halfWidth)));
     return best;
   }
   if (support.type === "fixed" || (node.restraints.ux && node.restraints.uy && node.restraints.rz)) {
-    const halfWidth = size * 0.62;
+    const halfWidth = size * 0.56;
     best = Math.min(best, pointToSegmentDistance(point, groundStart(screen, normal, halfWidth), groundEnd(screen, normal, halfWidth)));
     return best;
   }
-  const height = support.type === "roller" ? size * 0.58 : size * 0.55;
-  const halfBase = support.type === "roller" ? size * 0.36 : size * 0.38;
+  const height = support.type === "roller" ? size * 0.50 : size * 0.56;
+  const halfBase = support.type === "roller" ? size * 0.42 : size * 0.44;
   const base = { x: screen.x - dir.x * height, y: screen.y - dir.y * height };
   const p1 = { x: base.x + normal.x * halfBase, y: base.y + normal.y * halfBase };
   const p2 = { x: base.x - normal.x * halfBase, y: base.y - normal.y * halfBase };
   best = Math.min(best, pointToSegmentDistance(point, screen, p1), pointToSegmentDistance(point, screen, p2), pointToSegmentDistance(point, p1, p2));
   if (support.type === "roller") {
-    const radius = Math.max(4, size * 0.085);
-    const rollerCenter = { x: base.x - dir.x * (radius + 3), y: base.y - dir.y * (radius + 3) };
-    for (const offset of [-radius * 1.8, radius * 1.8]) {
+    const radius = Math.max(3, Math.min(4, size * 0.115));
+    const rollerCenter = { x: base.x - dir.x * radius, y: base.y - dir.y * radius };
+    const span = Math.max(radius * 1.45, halfBase * 0.56);
+    for (const offset of [-span, span]) {
       const center = { x: rollerCenter.x + normal.x * offset, y: rollerCenter.y + normal.y * offset };
       best = Math.min(best, Math.abs(Math.hypot(point.x - center.x, point.y - center.y) - radius));
     }
-    const groundCenter = { x: base.x - dir.x * (radius * 3 + 8), y: base.y - dir.y * (radius * 3 + 8) };
-    best = Math.min(best, pointToSegmentDistance(point, groundStart(groundCenter, normal, halfBase + 12), groundEnd(groundCenter, normal, halfBase + 12)));
+    const groundCenter = { x: base.x - dir.x * (radius * 2), y: base.y - dir.y * (radius * 2) };
+    best = Math.min(best, pointToSegmentDistance(point, groundStart(groundCenter, normal, halfBase + 6), groundEnd(groundCenter, normal, halfBase + 6)));
   } else {
-    best = Math.min(best, pointToSegmentDistance(point, groundStart(base, normal, halfBase + 8), groundEnd(base, normal, halfBase + 8)));
+    best = Math.min(best, pointToSegmentDistance(point, groundStart(base, normal, halfBase + 6), groundEnd(base, normal, halfBase + 6)));
   }
   return best;
 }
@@ -1249,8 +1310,8 @@ function isElementSelected(id) {
 function canvasPoint(event) {
   const rect = canvas.getBoundingClientRect();
   return {
-    x: (event.clientX - rect.left) * (canvas.width / Math.max(rect.width, 1)),
-    y: (event.clientY - rect.top) * (canvas.height / Math.max(rect.height, 1)),
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
   };
 }
 
@@ -1680,6 +1741,8 @@ function importProject(rawProject) {
   state.selection = { nodes: [], elements: [] };
   state.pendingNode = null;
   state.result = null;
+  els.resultText.textContent = "暂无结果";
+  renderStructuredResult(null, null, "whole");
   state.undoStack = [];
   state.redoStack = [];
   els.solverBackend.value = nextSolver;
@@ -2147,17 +2210,153 @@ async function solveProject(scope = "whole") {
     state.lastProject = project;
     state.lastScope = scope;
     els.resultText.textContent = formatResult(state.result, project, scope);
+    renderStructuredResult(state.result, project, scope);
     applySolveDisplayOptions();
+    setDiagramDrawerExpanded(true);
+    selectInspectorTab("static", "staticResultPane");
     showToast("求解完成。");
     draw();
   } catch (error) {
     state.result = null;
     state.scopeElements = null;
-    els.resultText.textContent = String(error.message || error);
-    showToast(String(error.message || error));
+    const message = String(error.message || error);
+    els.resultText.textContent = message;
+    renderStructuredResult(null, null, scope, message);
+    selectInspectorTab("static", "staticResultPane");
+    showToast(message);
     draw();
   } finally {
     els.solveButton.disabled = false;
+  }
+}
+
+function renderStructuredResult(payload, project, scope, errorMessage = "") {
+  if (!els.resultStructured) return;
+  els.resultStructured.textContent = "";
+  if (errorMessage) {
+    const card = document.createElement("div");
+    card.className = "result-badge-card";
+    const label = document.createElement("span");
+    label.className = "result-badge-label";
+    label.textContent = "求解失败";
+    const value = document.createElement("span");
+    value.className = "result-badge-value";
+    value.textContent = errorMessage;
+    card.append(label, value);
+    els.resultStructured.append(card);
+    return;
+  }
+  if (!payload || !project) {
+    const empty = document.createElement("p");
+    empty.className = "result-empty-state";
+    empty.textContent = "尚未求解。点击顶部「求解」运行结构分析。";
+    els.resultStructured.append(empty);
+    return;
+  }
+  const summary = payload.summary || {};
+  const scopeElements = project.scopeElements || null;
+  const scopeNodes = scopeElements ? scopeNodeIds(scopeElements) : null;
+  const elementInScope = (id) => !scopeElements || scopeElements.has(id);
+  const nodeInScope = (id) => !scopeNodes || scopeNodes.has(id);
+
+  const badge = document.createElement("div");
+  badge.className = "result-badge-card";
+  const badgeLabel = document.createElement("span");
+  badgeLabel.className = "result-badge-label";
+  badgeLabel.textContent = scope === "selection" ? "体系判断 · 隔离体视图" : "体系判断 · 整体模型";
+  const badgeValue = document.createElement("span");
+  badgeValue.className = "result-badge-value";
+  badgeValue.textContent = systemJudgementText(payload);
+  badge.append(badgeLabel, badgeValue);
+  els.resultStructured.append(badge);
+
+  const addTable = (title, headers, rows) => {
+    if (!rows.length) return;
+    const section = document.createElement("div");
+    section.className = "result-section";
+    const heading = document.createElement("h3");
+    heading.className = "result-section-title";
+    heading.textContent = title;
+    const table = document.createElement("table");
+    table.className = "result-table";
+    const thead = document.createElement("thead");
+    const trHead = document.createElement("tr");
+    headers.forEach((col) => {
+      const th = document.createElement("th");
+      th.textContent = col.label;
+      if (col.num) th.className = "num";
+      trHead.append(th);
+    });
+    thead.append(trHead);
+    const tbody = document.createElement("tbody");
+    rows.forEach((cells) => {
+      const tr = document.createElement("tr");
+      cells.forEach((cell, idx) => {
+        const td = document.createElement("td");
+        td.textContent = cell;
+        if (headers[idx]?.num) td.className = "num";
+        tr.append(td);
+      });
+      tbody.append(tr);
+    });
+    table.append(thead, tbody);
+    section.append(heading, table);
+    els.resultStructured.append(section);
+  };
+
+  if (state.solveOptions.includes("reaction")) {
+    const reactions = sortedEntries(payload.reactions || {}).filter(([id]) => nodeInScope(id));
+    addTable(
+      "支座反力",
+      [
+        { label: "节点" },
+        { label: "Fx (kN)", num: true },
+        { label: "Fy (kN)", num: true },
+        { label: "Mz (kN·m)", num: true },
+      ],
+      reactions.map(([id, v]) => [
+        id,
+        formatSigned((v.fx || 0) / 1000),
+        formatSigned((v.fy || 0) / 1000),
+        formatSigned((v.mz || 0) / 1000),
+      ])
+    );
+  }
+
+  if (state.solveOptions.includes("displacement")) {
+    const disps = sortedEntries(payload.displacements || {}).filter(([id]) => nodeInScope(id));
+    addTable(
+      "节点位移与转角",
+      [
+        { label: "节点" },
+        { label: "ux (mm)", num: true },
+        { label: "uy (mm)", num: true },
+        { label: "θ (rad)", num: true },
+      ],
+      disps.map(([id, v]) => [
+        id,
+        formatSigned((v.ux || 0) * 1000),
+        formatSigned((v.uy || 0) * 1000),
+        formatSigned(v.rz || 0),
+      ])
+    );
+  }
+
+  const danger = (summary.dangerous_sections || []).filter((item) => elementInScope(item.element)).slice(0, 4);
+  if (state.solveOptions.includes("danger") && danger.length) {
+    addTable(
+      "危险截面（最大 |M|）",
+      [
+        { label: "杆件" },
+        { label: "x (m)", num: true },
+        { label: "|M| (kN·m)", num: true },
+      ],
+      danger.map((item) => [
+        item.element,
+        formatNumber(item.x),
+        formatNumber(Math.abs(item.moment) / 1000),
+      ])
+    );
   }
 }
 
@@ -2608,12 +2807,14 @@ function cssColor(name) {
 
 function draw() {
   if (!ctx) return;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const { width, height, dpr } = canvasMetrics.main;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
   drawGrid();
+  drawSupports();
   drawElements();
   drawElementLoads();
   if (state.result && els.deformedToggle.checked) drawDeformedShape();
-  drawSupports();
   drawLoads();
   drawNodes();
   drawPreview();
@@ -2623,18 +2824,13 @@ function draw() {
 
 function resizeDynamicsCanvas() {
   if (!dynamicsCanvas) return;
-  const rect = dynamicsCanvas.getBoundingClientRect();
-  if (rect.width < 2 || rect.height < 2) return;
-  const previousWidth = dynamicsCanvas.width;
-  const previousHeight = dynamicsCanvas.height;
-  const nextWidth = Math.max(1, Math.floor(rect.width));
-  const nextHeight = Math.max(1, Math.floor(rect.height));
-  if (nextWidth === previousWidth && nextHeight === previousHeight) {
+  const previousWidth = canvasMetrics.dynamics.width;
+  const previousHeight = canvasMetrics.dynamics.height;
+  const { width: nextWidth, height: nextHeight, changed } = syncHiDpiCanvas(dynamicsCanvas, "dynamics", 240, 200);
+  if (!changed) {
     drawDynamicsScene();
     return;
   }
-  dynamicsCanvas.width = nextWidth;
-  dynamicsCanvas.height = nextHeight;
   if (!state.dynamics.viewportInitialized) {
     state.dynamics.origin = { x: nextWidth / 2, y: nextHeight / 2 };
     state.dynamics.viewportInitialized = true;
@@ -2664,7 +2860,11 @@ function selectedDynamicsObject() {
 }
 
 function dynamicsObjectColor(index) {
-  return ["#1688c5", "#e06c3b", "#6f9f39", "#8b5fc7", "#c08b18", "#d04f7b"][index % 6];
+  const dark = document.body.classList.contains("dark-theme");
+  const palette = dark
+    ? ["#e87a74", "#6ca6cd", "#e3a857", "#7fb8b0", "#a394e6", "#d4849a"]
+    : ["#b8760b", "#356b96", "#c44536", "#2d7a70", "#6254b8", "#8f5b3e"];
+  return palette[index % palette.length];
 }
 
 function syncDynamicsSizeLabels() {
@@ -3144,7 +3344,12 @@ function dynamicsRangeLabel(rangeType) {
 }
 
 function dynamicsFieldColor(kind) {
-  return { gravity: "#1688c5", electric: "#e08a2e", magnetic: "#8b5fc7" }[kind] || "#1688c5";
+  const map = {
+    gravity: cssColor("--blue") || "#6ca6cd",
+    electric: cssColor("--warn") || "#e3a857",
+    magnetic: cssColor("--violet") || "#a394e6",
+  };
+  return map[kind] || map.gravity;
 }
 
 function setDynamicsFieldDefaults(kind) {
@@ -3251,8 +3456,8 @@ function openDynamicsFieldDialog(fieldId = null) {
     const center = DynamicsFieldGeometry.viewportWorldCenter({
       origin: state.dynamics.origin,
       scale: state.dynamics.scale,
-      canvasWidth: dynamicsCanvas.width,
-      canvasHeight: dynamicsCanvas.height,
+      canvasWidth: canvasMetrics.dynamics.width,
+      canvasHeight: canvasMetrics.dynamics.height,
     });
     els.dynamicsEnvironment.value = "gravity";
     els.dynamicsFieldMode.value = "constant";
@@ -3566,6 +3771,7 @@ function solveDynamics() {
     return;
   }
   renderDynamicsResult();
+  selectInspectorTab("dynamics", "dynResultPane");
   drawDynamicsScene();
   if (selectedDynamicsOptions().has("trajectory")) startDynamicsAnimation();
   showDynamicsToast(`已完成 ${state.dynamics.result.objectResults.length} 个对象的动力学求解。`);
@@ -3600,7 +3806,9 @@ function dynamicsKindLabel(kind) {
 
 function drawDynamicsScene(sampleMap = null) {
   if (!dynamicsCtx || !dynamicsCanvas) return;
-  dynamicsCtx.clearRect(0, 0, dynamicsCanvas.width, dynamicsCanvas.height);
+  const { width, height, dpr } = canvasMetrics.dynamics;
+  dynamicsCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  dynamicsCtx.clearRect(0, 0, width, height);
   drawDynamicsGrid();
   drawDynamicsField();
   drawDynamicsTracksAndGrounds();
@@ -3641,34 +3849,39 @@ function dynamicsGridStep() {
 }
 
 function drawDynamicsGrid() {
+  const { width, height } = canvasMetrics.dynamics;
   dynamicsCtx.save();
   dynamicsCtx.fillStyle = cssColor("--canvas");
-  dynamicsCtx.fillRect(0, 0, dynamicsCanvas.width, dynamicsCanvas.height);
+  dynamicsCtx.fillRect(0, 0, width, height);
   dynamicsCtx.strokeStyle = cssColor("--grid");
   dynamicsCtx.lineWidth = 1;
   const worldStep = dynamicsGridStep();
   const step = worldStep * state.dynamics.scale;
-  for (let x = ((state.dynamics.origin.x % step) + step) % step; x < dynamicsCanvas.width; x += step) {
-    lineDynamics({ x, y: 0 }, { x, y: dynamicsCanvas.height });
+  for (let x = ((state.dynamics.origin.x % step) + step) % step; x < width; x += step) {
+    const px = Math.round(x) + 0.5;
+    lineDynamics({ x: px, y: 0 }, { x: px, y: height });
   }
-  for (let y = ((state.dynamics.origin.y % step) + step) % step; y < dynamicsCanvas.height; y += step) {
-    lineDynamics({ x: 0, y }, { x: dynamicsCanvas.width, y });
+  for (let y = ((state.dynamics.origin.y % step) + step) % step; y < height; y += step) {
+    const py = Math.round(y) + 0.5;
+    lineDynamics({ x: 0, y: py }, { x: width, y: py });
   }
   dynamicsCtx.strokeStyle = cssColor("--grid-major");
-  dynamicsCtx.lineWidth = 1.4;
-  if (state.dynamics.origin.y >= 0 && state.dynamics.origin.y <= dynamicsCanvas.height) {
-    lineDynamics({ x: 0, y: state.dynamics.origin.y }, { x: dynamicsCanvas.width, y: state.dynamics.origin.y });
+  dynamicsCtx.lineWidth = 1.2;
+  if (state.dynamics.origin.y >= 0 && state.dynamics.origin.y <= height) {
+    const oy = Math.round(state.dynamics.origin.y) + 0.5;
+    lineDynamics({ x: 0, y: oy }, { x: width, y: oy });
   }
-  if (state.dynamics.origin.x >= 0 && state.dynamics.origin.x <= dynamicsCanvas.width) {
-    lineDynamics({ x: state.dynamics.origin.x, y: 0 }, { x: state.dynamics.origin.x, y: dynamicsCanvas.height });
+  if (state.dynamics.origin.x >= 0 && state.dynamics.origin.x <= width) {
+    const ox = Math.round(state.dynamics.origin.x) + 0.5;
+    lineDynamics({ x: ox, y: 0 }, { x: ox, y: height });
   }
   dynamicsCtx.fillStyle = cssColor("--muted");
-  dynamicsCtx.font = "12px Segoe UI, Arial, sans-serif";
-  dynamicsCtx.fillText(`网格 ${formatNumber(worldStep)} m`, 14, 22);
-  if (state.dynamics.origin.y >= 18 && state.dynamics.origin.y <= dynamicsCanvas.height) {
-    dynamicsCtx.fillText("x (m)", dynamicsCanvas.width - 54, state.dynamics.origin.y - 8);
+  dynamicsCtx.font = "11px JetBrains Mono, Cascadia Mono, Consolas, monospace";
+  dynamicsCtx.fillText(`GRID ${formatNumber(worldStep)} m`, 12, 20);
+  if (state.dynamics.origin.y >= 18 && state.dynamics.origin.y <= height) {
+    dynamicsCtx.fillText("x (m)", width - 48, state.dynamics.origin.y - 7);
   }
-  if (state.dynamics.origin.x >= 0 && state.dynamics.origin.x <= dynamicsCanvas.width - 42) {
+  if (state.dynamics.origin.x >= 0 && state.dynamics.origin.x <= width - 42) {
     dynamicsCtx.fillText("y (m)", state.dynamics.origin.x + 8, 18);
   }
   dynamicsCtx.restore();
@@ -3679,9 +3892,10 @@ function drawDynamicsField() {
 }
 
 function drawDynamicsTracksAndGrounds() {
+  const { width, height } = canvasMetrics.dynamics;
   dynamicsCtx.save();
-  dynamicsCtx.strokeStyle = "#24c7b1";
-  dynamicsCtx.lineWidth = 2.4;
+  dynamicsCtx.strokeStyle = cssColor("--teal") || "#7fb8b0";
+  dynamicsCtx.lineWidth = 2.2;
   for (const trackSpec of state.dynamics.tracks || []) {
     try {
       const frames = DynamicsTracks.sampleTrack({ ...trackSpec, ...(trackSpec.geometry || {}) }, { count: 96 });
@@ -3696,8 +3910,8 @@ function drawDynamicsTracksAndGrounds() {
       // Project validation reports malformed tracks; the renderer stays fail-safe.
     }
   }
-  dynamicsCtx.strokeStyle = "#e5b955";
-  dynamicsCtx.lineWidth = 2;
+  dynamicsCtx.strokeStyle = cssColor("--warn") || "#e3a857";
+  dynamicsCtx.lineWidth = 1.8;
   for (const ground of state.dynamics.grounds || []) {
     const normal = ground.normal || { x: 0, y: 1 };
     const lengthSquared = normal.x * normal.x + normal.y * normal.y;
@@ -3705,7 +3919,7 @@ function drawDynamicsTracksAndGrounds() {
     const offset = Number(ground.offset || 0);
     const base = { x: (normal.x * offset) / lengthSquared, y: (normal.y * offset) / lengthSquared };
     const tangent = { x: -normal.y, y: normal.x };
-    const extent = (Math.max(dynamicsCanvas.width, dynamicsCanvas.height) / state.dynamics.scale) * 2;
+    const extent = (Math.max(width, height) / state.dynamics.scale) * 2;
     const start = dynamicsToScreen({ x: base.x - tangent.x * extent, y: base.y - tangent.y * extent });
     const end = dynamicsToScreen({ x: base.x + tangent.x * extent, y: base.y + tangent.y * extent });
     dynamicsCtx.beginPath();
@@ -3718,34 +3932,37 @@ function drawDynamicsTracksAndGrounds() {
 
 function drawSingleDynamicsField(field) {
   if (field.kind === "zero" || (field.rangeType === "custom" && (!field.path || field.path.length < 3))) return;
+  const { width, height } = canvasMetrics.dynamics;
   const color = dynamicsFieldColor(field.kind);
   dynamicsCtx.save();
   traceDynamicsFieldRange(field);
-  dynamicsCtx.fillStyle = `${color}${document.body.classList.contains("dark-theme") ? "20" : "14"}`;
+  dynamicsCtx.fillStyle = hexToAlpha(color, document.body.classList.contains("dark-theme") ? 0.08 : 0.07);
   dynamicsCtx.fill();
-  dynamicsCtx.strokeStyle = color;
-  dynamicsCtx.lineWidth = 1.5;
-  dynamicsCtx.setLineDash([7, 5]);
+  dynamicsCtx.strokeStyle = hexToAlpha(color, 0.7);
+  dynamicsCtx.lineWidth = 1.2;
+  dynamicsCtx.setLineDash([6, 4]);
   dynamicsCtx.stroke();
   dynamicsCtx.setLineDash([]);
   traceDynamicsFieldRange(field);
   dynamicsCtx.clip();
-  const spacing = 54;
-  for (let x = 26; x < dynamicsCanvas.width; x += spacing) {
-    for (let y = 30; y < dynamicsCanvas.height; y += spacing) {
+  const spacing = 64;
+  const symbolColor = hexToAlpha(color, 0.65);
+  for (let x = 28; x < width; x += spacing) {
+    for (let y = 32; y < height; y += spacing) {
       const world = dynamicsToWorld({ x, y });
       if (!pointInDynamicsField(world, field)) continue;
-      if (field.kind === "magnetic") drawDynamicsMagneticSymbol({ x, y }, field.magneticDirection, color);
-      else drawDynamicsVectorSymbol({ x, y }, dynamicsFieldVector(field), color);
+      if (field.kind === "magnetic") drawDynamicsMagneticSymbol({ x, y }, field.magneticDirection, symbolColor);
+      else drawDynamicsVectorSymbol({ x, y }, dynamicsFieldVector(field), symbolColor);
     }
   }
   dynamicsCtx.restore();
 }
 
 function traceDynamicsFieldRange(field) {
+  const { width, height } = canvasMetrics.dynamics;
   dynamicsCtx.beginPath();
   if (field.rangeType === "global") {
-    dynamicsCtx.rect(0, 0, dynamicsCanvas.width, dynamicsCanvas.height);
+    dynamicsCtx.rect(0, 0, width, height);
     return;
   }
   if (field.rangeType === "circle") {
@@ -3849,11 +4066,12 @@ function drawDynamicsObject(point, result) {
     const axis = { x: Math.cos(bodyAngle) * sizeA / 2, y: -Math.sin(bodyAngle) * sizeA / 2 };
     lineDynamics({ x: screen.x - axis.x, y: screen.y - axis.y }, { x: screen.x + axis.x, y: screen.y + axis.y });
   } else if (kind === "rectangle") {
+    dynamicsCtx.save();
     dynamicsCtx.translate(screen.x, screen.y);
     dynamicsCtx.rotate(-bodyAngle);
-    dynamicsCtx.strokeRect(-sizeA / 2, -sizeB / 2, sizeA, sizeB);
     dynamicsCtx.fillRect(-sizeA / 2, -sizeB / 2, sizeA, sizeB);
-    dynamicsCtx.setTransform(1, 0, 0, 1, 0, 0);
+    dynamicsCtx.strokeRect(-sizeA / 2, -sizeB / 2, sizeA, sizeB);
+    dynamicsCtx.restore();
   } else {
     dynamicsCtx.beginPath();
     dynamicsCtx.arc(screen.x, screen.y, sizeB, 0, Math.PI * 2);
@@ -3872,9 +4090,9 @@ function drawDynamicsObject(point, result) {
     }
   }
   dynamicsCtx.fillStyle = cssColor("--ink");
-  dynamicsCtx.font = "12px Segoe UI, Arial, sans-serif";
+  dynamicsCtx.font = "11px JetBrains Mono, Cascadia Mono, Consolas, monospace";
   const label = result ? `${model?.name || result.name} · t=${formatNumber(point.t || 0)} s` : model?.name || dynamicsKindLabel(kind);
-  dynamicsCtx.fillText(label, screen.x + 12, screen.y - 12);
+  dynamicsCtx.fillText(label, screen.x + 12, screen.y - 10);
   dynamicsCtx.restore();
 }
 
@@ -3904,12 +4122,12 @@ function drawDynamicsAppliedForces() {
     const length = force.type === "impulse" ? 34 : 46;
     const start = { x: point.x - unit.x * length, y: point.y - unit.y * length };
     dynamicsCtx.save();
-    dynamicsCtx.strokeStyle = force.type === "impulse" ? "#8b5fc7" : "#e06c3b";
+    dynamicsCtx.strokeStyle = force.type === "impulse" ? cssColor("--violet") || "#a394e6" : cssColor("--danger") || "#e87a74";
     dynamicsCtx.fillStyle = dynamicsCtx.strokeStyle;
-    dynamicsCtx.lineWidth = 2;
+    dynamicsCtx.lineWidth = 1.8;
     drawDynamicsArrow(start, point, 8);
-    dynamicsCtx.font = "11px Segoe UI, Arial, sans-serif";
-    dynamicsCtx.fillText(force.type === "impulse" ? "J" : "F", start.x + 4, start.y - 4);
+    dynamicsCtx.font = "11px JetBrains Mono, Cascadia Mono, Consolas, monospace";
+    dynamicsCtx.fillText(force.type === "impulse" ? "J" : "F", start.x + 5, start.y - 4);
     dynamicsCtx.restore();
   }
 }
@@ -3935,10 +4153,10 @@ function drawDynamicsRangeDraft() {
   if (!placement.active || !placement.startWorld || !placement.currentWorld) return;
   const color = dynamicsFieldColor(placement.draft?.kind);
   dynamicsCtx.save();
-  dynamicsCtx.fillStyle = `${color}${document.body.classList.contains("dark-theme") ? "42" : "28"}`;
+  dynamicsCtx.fillStyle = hexToAlpha(color, document.body.classList.contains("dark-theme") ? 0.24 : 0.16);
   dynamicsCtx.strokeStyle = cssColor("--select");
   dynamicsCtx.setLineDash([7, 5]);
-  dynamicsCtx.lineWidth = 2;
+  dynamicsCtx.lineWidth = 1.8;
   dynamicsCtx.beginPath();
   let label = "";
   let labelPoint = dynamicsToScreen(placement.currentWorld);
@@ -3969,10 +4187,13 @@ function drawDynamicsRangeDraft() {
   dynamicsCtx.stroke();
   dynamicsCtx.setLineDash([]);
   if (label) {
-    dynamicsCtx.font = "12px Segoe UI, Arial, sans-serif";
+    dynamicsCtx.font = `11px ${CANVAS_MONO_FONT}`;
     const width = dynamicsCtx.measureText(label).width;
     dynamicsCtx.fillStyle = cssColor("--surface");
-    dynamicsCtx.fillRect(labelPoint.x - width / 2 - 5, labelPoint.y - 10, width + 10, 20);
+    dynamicsCtx.strokeStyle = cssColor("--line-strong");
+    dynamicsCtx.lineWidth = 1;
+    dynamicsCtx.fillRect(labelPoint.x - width / 2 - 6, labelPoint.y - 10, width + 12, 20);
+    dynamicsCtx.strokeRect(labelPoint.x - width / 2 - 6, labelPoint.y - 10, width + 12, 20);
     dynamicsCtx.fillStyle = cssColor("--ink");
     dynamicsCtx.fillText(label, labelPoint.x - width / 2, labelPoint.y + 4);
   }
@@ -4041,8 +4262,8 @@ function isDynamicsPaintMode() {
 function dynamicsCanvasPoint(event) {
   const rect = dynamicsCanvas.getBoundingClientRect();
   return {
-    x: (event.clientX - rect.left) * (dynamicsCanvas.width / Math.max(rect.width, 1)),
-    y: (event.clientY - rect.top) * (dynamicsCanvas.height / Math.max(rect.height, 1)),
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
   };
 }
 
@@ -4189,35 +4410,116 @@ function clearDynamicsModel() {
 }
 
 function drawGrid() {
+  const { width, height } = canvasMetrics.main;
   ctx.save();
   ctx.fillStyle = cssColor("--canvas");
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, width, height);
   if (!els.gridToggle.checked) {
     drawAxes();
     ctx.restore();
     return;
   }
-  const step = state.gridSize * state.pxPerMeter;
-  const startX = state.origin.x % step;
-  const startY = state.origin.y % step;
+  let worldStep = state.gridSize;
+  while (worldStep * state.pxPerMeter < 16) worldStep *= 2;
+  const minorStep = worldStep * state.pxPerMeter;
+  const majorMultiple = Math.abs(worldStep - 0.5) < 1e-6 ? 2 : 5;
+  const majorWorldStep = worldStep * majorMultiple;
+  const majorStep = majorWorldStep * state.pxPerMeter;
+
+  const firstMinorCol = Math.floor(-state.origin.x / minorStep);
+  const lastMinorCol = Math.ceil((width - state.origin.x) / minorStep);
+  const firstMinorRow = Math.floor(-state.origin.y / minorStep);
+  const lastMinorRow = Math.ceil((height - state.origin.y) / minorStep);
+
   ctx.strokeStyle = cssColor("--grid");
   ctx.lineWidth = 1;
-  for (let x = startX; x < canvas.width; x += step) line({ x, y: 0 }, { x, y: canvas.height });
-  for (let y = startY; y < canvas.height; y += step) line({ x: 0, y }, { x: canvas.width, y });
-  drawAxes();
+  ctx.beginPath();
+  for (let col = firstMinorCol; col <= lastMinorCol; col += 1) {
+    if (col % majorMultiple === 0) continue;
+    const x = Math.round(state.origin.x + col * minorStep) + 0.5;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+  }
+  for (let row = firstMinorRow; row <= lastMinorRow; row += 1) {
+    if (row % majorMultiple === 0) continue;
+    const y = Math.round(state.origin.y + row * minorStep) + 0.5;
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+  }
+  ctx.stroke();
+
+  const firstMajorCol = Math.floor(-state.origin.x / majorStep);
+  const lastMajorCol = Math.ceil((width - state.origin.x) / majorStep);
+  const firstMajorRow = Math.floor(-state.origin.y / majorStep);
+  const lastMajorRow = Math.ceil((height - state.origin.y) / majorStep);
+
+  ctx.strokeStyle = cssColor("--grid-major");
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let col = firstMajorCol; col <= lastMajorCol; col += 1) {
+    if (col === 0) continue;
+    const x = Math.round(state.origin.x + col * majorStep) + 0.5;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+  }
+  for (let row = firstMajorRow; row <= lastMajorRow; row += 1) {
+    if (row === 0) continue;
+    const y = Math.round(state.origin.y + row * majorStep) + 0.5;
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+  }
+  ctx.stroke();
+
+  drawAxes(majorWorldStep, majorStep);
   ctx.restore();
 }
 
-function drawAxes() {
-  ctx.strokeStyle = cssColor("--grid-major");
-  ctx.lineWidth = 1.4;
-  line({ x: 0, y: state.origin.y }, { x: canvas.width, y: state.origin.y });
-  line({ x: state.origin.x, y: 0 }, { x: state.origin.x, y: canvas.height });
+function drawAxes(majorWorldStep = 1, majorStep = state.pxPerMeter) {
+  const { width, height } = canvasMetrics.main;
+  const ox = Math.round(state.origin.x) + 0.5;
+  const oy = Math.round(state.origin.y) + 0.5;
+  ctx.save();
+  ctx.strokeStyle = cssColor("--line-strong");
+  ctx.lineWidth = 1.25;
+  if (oy >= 0 && oy <= height) line({ x: 0, y: oy }, { x: width, y: oy });
+  if (ox >= 0 && ox <= width) line({ x: ox, y: 0 }, { x: ox, y: height });
+
+  // Subtle origin crosshair and engineering axis tick numerals
+  ctx.fillStyle = cssColor("--muted");
+  ctx.font = `10px ${CANVAS_MONO_FONT}`;
+  const axisYClamped = Math.max(14, Math.min(height - 16, oy));
+  const axisXClamped = Math.max(12, Math.min(width - 44, ox));
+  if (majorStep >= 42) {
+    const firstCol = Math.floor(-state.origin.x / majorStep);
+    const lastCol = Math.ceil((width - state.origin.x) / majorStep);
+    for (let col = firstCol; col <= lastCol; col += 1) {
+      if (col === 0) continue;
+      const x = state.origin.x + col * majorStep;
+      if (x < 24 || x > width - 38) continue;
+      const val = col * majorWorldStep;
+      const label = Number.isInteger(val) ? String(val) : val.toFixed(1);
+      ctx.fillText(label, x + 3, axisYClamped + 12);
+    }
+    const firstRow = Math.floor(-state.origin.y / majorStep);
+    const lastRow = Math.ceil((height - state.origin.y) / majorStep);
+    for (let row = firstRow; row <= lastRow; row += 1) {
+      if (row === 0) continue;
+      const y = state.origin.y + row * majorStep;
+      if (y < 18 || y > height - 18) continue;
+      const val = -row * majorWorldStep;
+      const label = Number.isInteger(val) ? String(val) : val.toFixed(1);
+      ctx.fillText(label, axisXClamped + 5, y - 3);
+    }
+  }
+  ctx.fillText("x (m)", width - 38, axisYClamped - 6);
+  ctx.fillText("y (m)", axisXClamped + 6, 14);
+  ctx.restore();
 }
 
 function drawElements() {
   ctx.save();
   ctx.lineCap = "round";
+  ctx.lineJoin = "round";
   for (const element of state.elements) {
     const nodeI = getNode(element.node_i);
     const nodeJ = getNode(element.node_j);
@@ -4225,22 +4527,147 @@ function drawElements() {
     const a = worldToScreen(nodeI);
     const b = worldToScreen(nodeJ);
     const selected = isElementSelected(element.id);
-    ctx.strokeStyle = selected ? cssColor("--select") : cssColor("--ink");
-    ctx.lineWidth = selected ? 4 : 3;
-    drawElementShape(element, a, b);
+    const strokeColor = selected ? cssColor("--select") : cssColor("--ink");
     const geometry = elementGeometryOf(element);
-    if (element.type === "rigid") {
-      ctx.setLineDash([7, 5]);
-      ctx.lineWidth = 1.5;
-      line(offsetPoint(a, b, 5), offsetPoint(b, a, -5));
-      ctx.setLineDash([]);
-    } else if (geometry === "tee") {
-      drawTeeElementGlyph(a, b, selected);
+
+    if (element.type === "rigid" && (geometry === "straight" || geometry === "tee")) {
+      drawRigidElementBar(a, b, strokeColor, selected);
+      if (geometry === "tee") drawTeeElementGlyph(a, b, selected);
+    } else {
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = selected ? 3.2 : 2.4;
+      drawElementShape(element, a, b);
+      if (element.type === "rigid") {
+        ctx.save();
+        ctx.strokeStyle = hexToAlpha(strokeColor, 0.55);
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([5, 3]);
+        drawElementShape(element, { x: a.x, y: a.y - 3 }, { x: b.x, y: b.y - 3 });
+        ctx.restore();
+      } else if (geometry === "tee") {
+        drawTeeElementGlyph(a, b, selected);
+      }
     }
-    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-    drawText(element.id, mid.x + 6, mid.y - 8, cssColor("--ink"));
+
+    // End hinge / truss pin visual indicators
+    const solverType = solverElementType(element);
+    if (solverType === "truss") {
+      drawElementEndHinge(element, nodeI, nodeJ, a, b, "i", strokeColor, 3.1, 9.5);
+      drawElementEndHinge(element, nodeI, nodeJ, a, b, "j", strokeColor, 3.1, 9.5);
+    } else {
+      if (element.moment_release_i) {
+        drawElementEndHinge(element, nodeI, nodeJ, a, b, "i", selected ? cssColor("--select") : cssColor("--accent-ink") || strokeColor, 3.8, 10.5);
+      }
+      if (element.moment_release_j) {
+        drawElementEndHinge(element, nodeI, nodeJ, a, b, "j", selected ? cssColor("--select") : cssColor("--accent-ink") || strokeColor, 3.8, 10.5);
+      }
+    }
+
+    const labelPt = elementLabelPoint(element, nodeI, nodeJ, a, b);
+    drawPillLabel(element.id, labelPt.x, labelPt.y, selected ? cssColor("--select") : cssColor("--ink"), {
+      align: "center",
+      fontSize: 11,
+      paddingX: 4,
+      paddingY: 2,
+    });
   }
   ctx.restore();
+}
+
+function drawRigidElementBar(a, b, color, selected) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const nx = -dy / len;
+  const ny = dx / len;
+  const halfGap = selected ? 3.2 : 2.8;
+  const a1 = { x: a.x + nx * halfGap, y: a.y + ny * halfGap };
+  const b1 = { x: b.x + nx * halfGap, y: b.y + ny * halfGap };
+  const a2 = { x: a.x - nx * halfGap, y: a.y - ny * halfGap };
+  const b2 = { x: b.x - nx * halfGap, y: b.y - ny * halfGap };
+  ctx.save();
+  ctx.fillStyle = hexToAlpha(color, selected ? 0.18 : 0.1);
+  ctx.beginPath();
+  ctx.moveTo(a1.x, a1.y);
+  ctx.lineTo(b1.x, b1.y);
+  ctx.lineTo(b2.x, b2.y);
+  ctx.lineTo(a2.x, a2.y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = selected ? 2.1 : 1.7;
+  line(a1, b1);
+  line(a2, b2);
+  ctx.lineWidth = 1.2;
+  line(a1, a2);
+  line(b1, b2);
+  ctx.restore();
+}
+
+function elementEndTangent(element, nodeI, nodeJ, a, b, end) {
+  const geometry = elementGeometryOf(element);
+  if (geometry === "straight" || geometry === "tee") {
+    const start = end === "i" ? a : b;
+    const target = end === "i" ? b : a;
+    const dx = target.x - start.x;
+    const dy = target.y - start.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-3) return null;
+    return { origin: start, ux: dx / len, uy: dy / len, length: len };
+  }
+  const screenPath = GeometryDiscretize.elementPath(element, nodeI, nodeJ).map((point) => worldToScreen(point));
+  if (screenPath.length < 2) return null;
+  const start = end === "i" ? screenPath[0] : screenPath[screenPath.length - 1];
+  const next = end === "i" ? screenPath[1] : screenPath[screenPath.length - 2];
+  const dx = next.x - start.x;
+  const dy = next.y - start.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-3) return null;
+  return { origin: start, ux: dx / len, uy: dy / len, length: len };
+}
+
+function drawElementEndHinge(element, nodeI, nodeJ, a, b, end, color, radius, inset) {
+  const tangent = elementEndTangent(element, nodeI, nodeJ, a, b, end);
+  if (!tangent || tangent.length < inset * 1.6) return;
+  const cx = tangent.origin.x + tangent.ux * inset;
+  const cy = tangent.origin.y + tangent.uy * inset;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.fillStyle = cssColor("--canvas");
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.75;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+function elementLabelPoint(element, nodeI, nodeJ, a, b) {
+  const geometry = elementGeometryOf(element);
+  const hasDistLoad = state.elementLoads.some((item) => item.element === element.id);
+  if (geometry === "straight" || geometry === "tee") {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    let nx = -dy / len;
+    let ny = dx / len;
+    if (ny > 0) {
+      nx = -nx;
+      ny = -ny;
+    }
+    if (hasDistLoad) {
+      nx = -nx;
+      ny = -ny;
+    }
+    const offset = hasDistLoad ? 16 : 13;
+    return { x: (a.x + b.x) / 2 + nx * offset, y: (a.y + b.y) / 2 + ny * offset };
+  }
+  const screenPath = GeometryDiscretize.elementPath(element, nodeI, nodeJ).map((point) => worldToScreen(point));
+  if (screenPath.length >= 2) {
+    const mid = GeometryDiscretize.pointAtPathRatio(screenPath, 0.5);
+    return { x: mid.x, y: mid.y + (hasDistLoad ? 16 : -12) };
+  }
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + (hasDistLoad ? 16 : -12) };
 }
 
 function drawElementShape(element, a, b) {
@@ -4289,11 +4716,11 @@ function drawTeeElementGlyph(a, b, selected) {
   const normal = { x: -dy / length, y: dx / length };
   const tangent = { x: dx / length, y: dy / length };
   const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  const depth = selected ? 17 : 14;
-  const cap = selected ? 18 : 14;
+  const depth = selected ? 11 : 10;
+  const cap = selected ? 12 : 10.5;
   ctx.save();
   ctx.strokeStyle = selected ? cssColor("--select") : cssColor("--ink");
-  ctx.lineWidth = 1.8;
+  ctx.lineWidth = 1.7;
   const stem = { x: mid.x + normal.x * depth, y: mid.y + normal.y * depth };
   line(mid, stem);
   line({ x: stem.x - tangent.x * cap, y: stem.y - tangent.y * cap }, { x: stem.x + tangent.x * cap, y: stem.y + tangent.y * cap });
@@ -4306,14 +4733,28 @@ function drawNodes() {
     if (node.fused) continue;
     const point = worldToScreen(node);
     const selected = isNodeSelected(node.id);
+    if (selected) {
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, 8.5, 0, Math.PI * 2);
+      ctx.fillStyle = hexToAlpha(cssColor("--select"), 0.16);
+      ctx.strokeStyle = hexToAlpha(cssColor("--select"), 0.55);
+      ctx.lineWidth = 1.2;
+      ctx.fill();
+      ctx.stroke();
+    }
     ctx.beginPath();
-    ctx.arc(point.x, point.y, selected ? 7 : 5, 0, Math.PI * 2);
-    ctx.fillStyle = selected ? cssColor("--select") : cssColor("--surface");
+    ctx.arc(point.x, point.y, selected ? 4.4 : 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = selected ? cssColor("--select") : cssColor("--canvas");
     ctx.strokeStyle = selected ? cssColor("--select") : cssColor("--ink");
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 1.85;
     ctx.fill();
     ctx.stroke();
-    drawText(node.id, point.x + 8, point.y - 10, cssColor("--muted"));
+    drawPillLabel(node.id, point.x + 8, point.y - 10, selected ? cssColor("--select") : cssColor("--muted"), {
+      align: "left",
+      fontSize: 10.5,
+      paddingX: 3,
+      paddingY: 1,
+    });
   }
   ctx.restore();
 }
@@ -4333,14 +4774,20 @@ function drawSupports() {
     const point = worldToScreen(node);
     const support = node.support || supportFromRestraints(node.restraints);
     const direction = supportDirection(node);
+    const selected = isNodeSelected(node.id);
+    const color = selected ? cssColor("--select") : cssColor("--ink");
     if (support.type === "ground") {
-      drawGroundFoundation(point, direction);
+      drawGroundFoundation(point, direction, color, selected);
     } else if (support.type === "fixed" || (node.restraints.ux && node.restraints.uy && node.restraints.rz)) {
-      drawFixedSupport(point, direction);
+      drawFixedSupport(point, direction, color, selected);
     } else if (support.type === "pin" || (node.restraints.ux && node.restraints.uy)) {
-      drawPinSupport(point, direction);
+      drawPinSupport(point, direction, color, selected, Boolean(node.fused));
     } else {
-      drawRollerSupport(point, direction);
+      drawRollerSupport(point, direction, color, selected, Boolean(node.fused));
+    }
+    const angle = supportAngleOf(node);
+    if (Math.abs(angle) > 0.05) {
+      drawInclinedSupportAnnotation(point, angle, color);
     }
   }
 }
@@ -4360,101 +4807,195 @@ function supportDirection(node) {
   return { x: -Math.sin(radians), y: -Math.cos(radians) };
 }
 
-function drawFixedSupport(point, dir) {
+function supportFillTone(selected) {
+  if (selected) return hexToAlpha(cssColor("--select"), 0.14);
+  return document.body.classList.contains("dark-theme") ? "rgba(255, 255, 255, 0.06)" : "rgba(28, 25, 20, 0.055)";
+}
+
+function drawFixedSupport(point, dir, color = cssColor("--ink"), selected = false) {
   ctx.save();
-  ctx.strokeStyle = cssColor("--ink");
-  ctx.lineWidth = 2.2;
   const normal = { x: -dir.y, y: dir.x };
-  const halfWidth = supportSymbolSize() * 0.62;
-  const a = groundStart(point, normal, halfWidth);
-  const b = groundEnd(point, normal, halfWidth);
-  line(a, b);
-  for (let i = -halfWidth + 5; i <= halfWidth - 5; i += 8) {
-    const base = { x: point.x + normal.x * i, y: point.y + normal.y * i };
-    line(base, { x: base.x - dir.x * 12 + normal.x * 4, y: base.y - dir.y * 12 + normal.y * 4 });
-  }
+  const halfWidth = supportSymbolSize() * 0.56;
+  drawSupportGround(point, dir, normal, halfWidth, color, selected ? 2.4 : 2.15, 7.5);
   ctx.restore();
 }
 
-function drawGroundFoundation(point, dir) {
+function drawGroundFoundation(point, dir, color = cssColor("--ink"), selected = false) {
   ctx.save();
-  const normal = { x: -dir.y, y: dir.x };
-  drawSupportGround(point, dir, normal, supportSymbolSize() * 0.68, cssColor("--ink"), 2.4);
-  ctx.restore();
-}
-
-function drawPinSupport(point, dir) {
-  ctx.save();
-  ctx.strokeStyle = cssColor("--ink");
-  ctx.fillStyle = document.body.classList.contains("dark-theme") ? "rgba(255, 255, 255, 0.08)" : "rgba(15, 23, 42, 0.05)";
-  ctx.lineWidth = 2.1;
   const normal = { x: -dir.y, y: dir.x };
   const size = supportSymbolSize();
-  const height = size * 0.55;
-  const halfBase = size * 0.38;
-  const base = { x: point.x - dir.x * height, y: point.y - dir.y * height };
-  const p1 = { x: base.x + normal.x * halfBase, y: base.y + normal.y * halfBase };
-  const p2 = { x: base.x - normal.x * halfBase, y: base.y - normal.y * halfBase };
+  const topHalf = size * 0.30;
+  const botHalf = size * 0.52;
+  const step1 = 4.5;
+  const step2 = 9;
+  const p = (nOff, dOff) => ({
+    x: point.x + normal.x * nOff - dir.x * dOff,
+    y: point.y + normal.y * nOff - dir.y * dOff,
+  });
+  ctx.fillStyle = supportFillTone(selected);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = selected ? 1.8 : 1.5;
+  ctx.lineJoin = "miter";
   ctx.beginPath();
-  ctx.moveTo(point.x, point.y);
-  ctx.lineTo(p1.x, p1.y);
-  ctx.lineTo(p2.x, p2.y);
+  ctx.moveTo(p(-topHalf, 0).x, p(-topHalf, 0).y);
+  ctx.lineTo(p(topHalf, 0).x, p(topHalf, 0).y);
+  ctx.lineTo(p(topHalf, step1).x, p(topHalf, step1).y);
+  ctx.lineTo(p(botHalf, step1).x, p(botHalf, step1).y);
+  ctx.lineTo(p(botHalf, step2).x, p(botHalf, step2).y);
+  ctx.lineTo(p(-botHalf, step2).x, p(-botHalf, step2).y);
+  ctx.lineTo(p(-botHalf, step1).x, p(-botHalf, step1).y);
+  ctx.lineTo(p(-topHalf, step1).x, p(-topHalf, step1).y);
   ctx.closePath();
   ctx.fill();
   ctx.stroke();
-  drawSupportGround(base, dir, normal, halfBase + 9, cssColor("--ink"), 1.9);
+
+  const groundCenter = p(0, step2);
+  drawSupportGround(groundCenter, dir, normal, size * 0.66, color, 1.75, 6.5);
   ctx.restore();
 }
 
-function drawRollerSupport(point, dir) {
-  ctx.save();
-  ctx.strokeStyle = cssColor("--ink");
-  ctx.fillStyle = document.body.classList.contains("dark-theme") ? "rgba(255, 255, 255, 0.08)" : "rgba(15, 23, 42, 0.05)";
-  ctx.lineWidth = 2.1;
-  const normal = { x: -dir.y, y: dir.x };
-  const size = supportSymbolSize();
-  const height = size * 0.58;
-  const halfBase = size * 0.36;
-  const radius = Math.max(4, size * 0.085);
-  const base = { x: point.x - dir.x * height, y: point.y - dir.y * height };
-  const p1 = { x: base.x + normal.x * halfBase, y: base.y + normal.y * halfBase };
-  const p2 = { x: base.x - normal.x * halfBase, y: base.y - normal.y * halfBase };
-  ctx.beginPath();
-  ctx.moveTo(point.x, point.y);
-  ctx.lineTo(p1.x, p1.y);
-  ctx.lineTo(p2.x, p2.y);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  const rollerCenter = { x: base.x - dir.x * (radius + 3), y: base.y - dir.y * (radius + 3) };
-  for (const offset of [-radius * 1.8, radius * 1.8]) {
-    ctx.beginPath();
-    ctx.arc(rollerCenter.x + normal.x * offset, rollerCenter.y + normal.y * offset, radius, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  const groundCenter = { x: base.x - dir.x * (radius * 3 + 8), y: base.y - dir.y * (radius * 3 + 8) };
-  drawSupportGround(groundCenter, dir, normal, halfBase + 12, cssColor("--ink"), 1.9);
-  ctx.restore();
-}
-
-function drawSupportGround(center, dir, normal, halfWidth, color = cssColor("--ink"), lineWidth = 1.8) {
+function drawPinSupport(point, dir, color = cssColor("--ink"), selected = false, drawApexRing = false) {
   ctx.save();
   ctx.strokeStyle = color;
+  ctx.fillStyle = supportFillTone(selected);
+  ctx.lineWidth = selected ? 1.95 : 1.7;
+  ctx.lineJoin = "round";
+  const normal = { x: -dir.y, y: dir.x };
+  const size = supportSymbolSize();
+  const height = size * 0.56;
+  const halfBase = size * 0.44;
+  const base = { x: point.x - dir.x * height, y: point.y - dir.y * height };
+  const p1 = { x: base.x + normal.x * halfBase, y: base.y + normal.y * halfBase };
+  const p2 = { x: base.x - normal.x * halfBase, y: base.y - normal.y * halfBase };
+  ctx.beginPath();
+  ctx.moveTo(point.x, point.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  drawSupportGround(base, dir, normal, halfBase + 6, color, 1.65, 6.5);
+  if (drawApexRing) {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = cssColor("--canvas");
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRollerSupport(point, dir, color = cssColor("--ink"), selected = false, drawApexRing = false) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = supportFillTone(selected);
+  ctx.lineWidth = selected ? 1.95 : 1.7;
+  ctx.lineJoin = "round";
+  const normal = { x: -dir.y, y: dir.x };
+  const size = supportSymbolSize();
+  const height = size * 0.50;
+  const halfBase = size * 0.42;
+  const radius = Math.max(3, Math.min(4, size * 0.115));
+  const base = { x: point.x - dir.x * height, y: point.y - dir.y * height };
+  const p1 = { x: base.x + normal.x * halfBase, y: base.y + normal.y * halfBase };
+  const p2 = { x: base.x - normal.x * halfBase, y: base.y - normal.y * halfBase };
+  ctx.beginPath();
+  ctx.moveTo(point.x, point.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Strictly tangent double rollers (0px gap to triangle base and ground plane)
+  const rollerCenter = { x: base.x - dir.x * radius, y: base.y - dir.y * radius };
+  const span = Math.max(radius * 1.45, halfBase * 0.56);
+  ctx.fillStyle = cssColor("--canvas");
+  ctx.lineWidth = 1.55;
+  for (const offset of [-span, span]) {
+    ctx.beginPath();
+    ctx.arc(rollerCenter.x + normal.x * offset, rollerCenter.y + normal.y * offset, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  const groundCenter = { x: base.x - dir.x * (radius * 2), y: base.y - dir.y * (radius * 2) };
+  drawSupportGround(groundCenter, dir, normal, halfBase + 6, color, 1.65, 6.5);
+  if (drawApexRing) {
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = cssColor("--canvas");
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawSupportGround(center, dir, normal, halfWidth, color = cssColor("--ink"), lineWidth = 1.65, hatchDepth = 6.5) {
+  ctx.save();
+  // Subtle earth backing strip behind the ground line
+  const a = groundStart(center, normal, halfWidth);
+  const b = groundEnd(center, normal, halfWidth);
+  ctx.fillStyle = document.body.classList.contains("dark-theme") ? "rgba(255, 255, 255, 0.035)" : "rgba(28, 25, 20, 0.04)";
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.lineTo(b.x - dir.x * hatchDepth, b.y - dir.y * hatchDepth);
+  ctx.lineTo(a.x - dir.x * hatchDepth, a.y - dir.y * hatchDepth);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = color;
+  ctx.lineCap = "round";
   ctx.lineWidth = lineWidth;
-  line(groundStart(center, normal, halfWidth), groundEnd(center, normal, halfWidth));
-  ctx.lineWidth = Math.max(1.2, lineWidth - 0.4);
-  for (let offset = -halfWidth + 4; offset <= halfWidth - 4; offset += 8) {
+  line(a, b);
+
+  // Standard 45-degree textbook hatch strokes
+  ctx.strokeStyle = hexToAlpha(color, 0.72);
+  ctx.lineWidth = 1.1;
+  const spacing = 6;
+  const hatchVecX = -dir.x * hatchDepth - normal.x * hatchDepth;
+  const hatchVecY = -dir.y * hatchDepth - normal.y * hatchDepth;
+  for (let offset = -halfWidth + 3.5; offset <= halfWidth - 1.5; offset += spacing) {
     const start = { x: center.x + normal.x * offset, y: center.y + normal.y * offset };
-    const end = {
-      x: start.x - dir.x * 11 + normal.x * 4,
-      y: start.y - dir.y * 11 + normal.y * 4,
-    };
+    const end = { x: start.x + hatchVecX, y: start.y + hatchVecY };
     line(start, end);
   }
   ctx.restore();
 }
 
+function drawInclinedSupportAnnotation(point, angle, color) {
+  const rad = (angle * Math.PI) / 180;
+  const size = supportSymbolSize();
+  const refLen = size * 0.9;
+  const arcR = size * 0.56;
+  ctx.save();
+  ctx.strokeStyle = hexToAlpha(color, 0.45);
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  line(point, { x: point.x + refLen, y: point.y });
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.arc(point.x, point.y, arcR, 0, -rad, angle > 0);
+  ctx.stroke();
+  const midRad = -rad / 2;
+  const labelX = point.x + Math.cos(midRad) * (arcR + 12);
+  const labelY = point.y + Math.sin(midRad) * (arcR + 12);
+  drawPillLabel(`${formatNumber(angle, 1)}°`, labelX, labelY, cssColor("--muted"), {
+    align: "center",
+    fontSize: 10,
+    paddingX: 3,
+    paddingY: 1,
+  });
+  ctx.restore();
+}
+
+function loadStrokeColor() {
+  return cssColor("--load") || cssColor("--danger");
+}
+
 function drawLoads() {
+  const color = loadStrokeColor();
   for (const load of state.loads) {
     if (load.kind === "element_point" && load.element) {
       drawElementPointLoad(load);
@@ -4467,13 +5008,22 @@ function drawLoads() {
     const fy = quantityToNumber(load.fy, "N");
     const magnitude = Math.hypot(fx, fy);
     if (magnitude > 0) {
-      const length = Math.min(70, Math.max(30, magnitude / 250));
-      const vector = { x: (fx / magnitude) * length, y: (-fy / magnitude) * length };
-      drawArrow({ x: point.x - vector.x, y: point.y - vector.y }, point, cssColor("--danger"));
-      drawText(compactForce(magnitude), point.x - vector.x + 6, point.y - vector.y, cssColor("--danger"));
+      const length = Math.min(62, Math.max(32, magnitude / 240));
+      const ux = fx / magnitude;
+      const uy = -fy / magnitude;
+      const tipGap = 5.5;
+      const tip = { x: point.x - ux * tipGap, y: point.y - uy * tipGap };
+      const tail = { x: tip.x - ux * length, y: tip.y - uy * length };
+      drawArrow(tail, tip, color, 8.5, 1.85);
+      drawPillLabel(compactForce(magnitude), tail.x + 6, tail.y - 4, color, {
+        align: "left",
+        fontSize: 11,
+        paddingX: 4,
+        paddingY: 1.5,
+      });
     }
     const mz = quantityToNumber(load.mz, "N*m");
-    if (Math.abs(mz) > 0) drawMomentGlyph(point, mz);
+    if (Math.abs(mz) > 0) drawMomentGlyph(point, mz, compactMoment(mz));
   }
 }
 
@@ -4483,19 +5033,29 @@ function drawElementPointLoad(load) {
   const nodeI = getNode(element.node_i);
   const nodeJ = getNode(element.node_j);
   if (!nodeI || !nodeJ) return;
+  const color = loadStrokeColor();
   const ratio = Math.max(0, Math.min(1, Number(load.ratio ?? 0.5)));
   const point = GeometryDiscretize.pointAtPathRatio(elementScreenPath(element), ratio);
   const fx = quantityToNumber(load.fx, "N");
   const fy = quantityToNumber(load.fy, "N");
   const magnitude = Math.hypot(fx, fy);
   if (magnitude > 0) {
-    const length = Math.min(70, Math.max(30, magnitude / 250));
-    const vector = { x: (fx / magnitude) * length, y: (-fy / magnitude) * length };
-    drawArrow({ x: point.x - vector.x, y: point.y - vector.y }, point, cssColor("--danger"));
-    drawText(`${compactForce(magnitude)} @${Math.round(ratio * 100)}%`, point.x - vector.x + 6, point.y - vector.y, cssColor("--danger"));
+    const length = Math.min(62, Math.max(32, magnitude / 240));
+    const ux = fx / magnitude;
+    const uy = -fy / magnitude;
+    const tipGap = 2.5;
+    const tip = { x: point.x - ux * tipGap, y: point.y - uy * tipGap };
+    const tail = { x: tip.x - ux * length, y: tip.y - uy * length };
+    drawArrow(tail, tip, color, 8.5, 1.85);
+    drawPillLabel(`${compactForce(magnitude)} @${Math.round(ratio * 100)}%`, tail.x + 6, tail.y - 4, color, {
+      align: "left",
+      fontSize: 11,
+      paddingX: 4,
+      paddingY: 1.5,
+    });
   }
   const mz = quantityToNumber(load.mz, "N*m");
-  if (Math.abs(mz) > 0) drawMomentGlyph(point, mz);
+  if (Math.abs(mz) > 0) drawMomentGlyph(point, mz, compactMoment(mz));
 }
 
 function drawElementLoads() {
@@ -4518,8 +5078,17 @@ function drawElementLoads() {
   ctx.restore();
 }
 
+function screenPathLength(screenPath) {
+  let total = 0;
+  for (let i = 1; i < screenPath.length; i += 1) {
+    total += Math.hypot(screenPath[i].x - screenPath[i - 1].x, screenPath[i].y - screenPath[i - 1].y);
+  }
+  return total;
+}
+
 function drawDistributedForceAlongPath(load, nodeI, nodeJ, screenPath) {
-  const count = 9;
+  const pathLen = screenPathLength(screenPath);
+  const count = Math.max(4, Math.min(20, Math.round(pathLen / 26) + 1));
   const samples = [];
   let maxMagnitude = 1;
   for (let index = 0; index < count; index += 1) {
@@ -4529,11 +5098,9 @@ function drawDistributedForceAlongPath(load, nodeI, nodeJ, screenPath) {
     samples.push({ ratio, global, magnitude });
     maxMagnitude = Math.max(maxMagnitude, magnitude);
   }
+  const color = loadStrokeColor();
+  const bases = [];
   const starts = [];
-  ctx.save();
-  ctx.strokeStyle = cssColor("--danger");
-  ctx.fillStyle = cssColor("--danger");
-  ctx.lineWidth = 1.8;
   for (const sample of samples) {
     const base = GeometryDiscretize.pointAtPathRatio(screenPath, sample.ratio);
     let start = base;
@@ -4541,27 +5108,55 @@ function drawDistributedForceAlongPath(load, nodeI, nodeJ, screenPath) {
       const screenX = sample.global.x;
       const screenY = -sample.global.y;
       const scale = Math.hypot(screenX, screenY) || 1;
-      const arrowLength = Math.max(3, (sample.magnitude / maxMagnitude) * 38);
+      const arrowLength = Math.max(8, (sample.magnitude / maxMagnitude) * 34);
       start = {
         x: base.x - (screenX / scale) * arrowLength,
         y: base.y - (screenY / scale) * arrowLength,
       };
-      drawArrow(start, base, cssColor("--danger"));
     }
+    bases.push(base);
     starts.push(start);
   }
+
+  ctx.save();
+  // Subtle tinted envelope polygon under arrows
+  ctx.beginPath();
+  starts.forEach((point, index) => {
+    if (index === 0) ctx.moveTo(point.x, point.y);
+    else ctx.lineTo(point.x, point.y);
+  });
+  for (let i = bases.length - 1; i >= 0; i -= 1) {
+    ctx.lineTo(bases[i].x, bases[i].y);
+  }
+  ctx.closePath();
+  ctx.fillStyle = hexToAlpha(color, document.body.classList.contains("dark-theme") ? 0.11 : 0.09);
+  ctx.fill();
+
+  for (let i = 0; i < samples.length; i += 1) {
+    if (samples[i].magnitude > maxMagnitude * 0.03) {
+      drawArrow(starts[i], bases[i], color, 6.5, 1.35);
+    }
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.6;
   ctx.beginPath();
   starts.forEach((point, index) => {
     if (index === 0) ctx.moveTo(point.x, point.y);
     else ctx.lineTo(point.x, point.y);
   });
   ctx.stroke();
-  line(starts[0], screenPath[0]);
-  line(starts[starts.length - 1], screenPath[screenPath.length - 1]);
-  const mid = starts[Math.floor(starts.length / 2)];
-  const midSample = samples[Math.floor(samples.length / 2)];
-  const labelOffset = labelOffsetForLoad(mid, midSample);
-  drawText(distributedLoadLabel(load), labelOffset.x, labelOffset.y, cssColor("--danger"));
+  line(starts[0], bases[0]);
+  line(starts[starts.length - 1], bases[bases.length - 1]);
+
+  const midIdx = Math.floor(starts.length / 2);
+  const labelOffset = labelOffsetForLoad(starts[midIdx], samples[midIdx]);
+  drawPillLabel(distributedLoadLabel(load), labelOffset.x, labelOffset.y, color, {
+    align: "center",
+    fontSize: 11,
+    paddingX: 5,
+    paddingY: 2,
+  });
   ctx.restore();
 }
 
@@ -4571,23 +5166,28 @@ function labelOffsetForLoad(point, sample) {
   const scale = Math.hypot(screenX, screenY) || 1;
   const side = sample.magnitude > 0 ? 1 : 0;
   return {
-    x: point.x - (screenX / scale) * 8 * side,
-    y: point.y - (screenY / scale) * 8 * side,
+    x: point.x - (screenX / scale) * 14 * side,
+    y: point.y - (screenY / scale) * 14 * side,
   };
 }
 
 function drawUniformMomentLoad(load, screenPath) {
   const intensity = quantityToNumber(load.mz || "0 N*m/m", "N*m/m");
   const sign = intensity >= 0 ? 1 : -1;
+  const pathLen = screenPathLength(screenPath);
+  const count = Math.max(3, Math.min(6, Math.round(pathLen / 46)));
+  const color = loadStrokeColor();
   ctx.save();
-  ctx.strokeStyle = cssColor("--danger");
-  ctx.fillStyle = cssColor("--danger");
-  ctx.lineWidth = 1.8;
-  for (let index = 1; index <= 5; index += 1) {
-    drawMomentGlyph(pointBesidePath(screenPath, index / 6, 24), sign);
+  for (let index = 1; index <= count; index += 1) {
+    drawMomentGlyph(pointBesidePath(screenPath, index / (count + 1), 22), sign, null, 10.5);
   }
-  const mid = pointBesidePath(screenPath, 0.5, 48);
-  drawText(load.mz || "0 N*m/m", mid.x, mid.y, cssColor("--danger"));
+  const mid = pointBesidePath(screenPath, 0.5, 42);
+  drawPillLabel(load.mz || "0 N*m/m", mid.x, mid.y, color, {
+    align: "center",
+    fontSize: 11,
+    paddingX: 5,
+    paddingY: 2,
+  });
   ctx.restore();
 }
 
@@ -4616,21 +5216,59 @@ function compactForce(value) {
   return `${value.toFixed(0)} N`;
 }
 
-function drawMomentGlyph(point, moment) {
+function compactMoment(value) {
+  const abs = Math.abs(value);
+  const sign = value < 0 ? "-" : "";
+  if (abs >= 1000) return `${sign}${(abs / 1000).toFixed(1)} kN·m`;
+  return `${sign}${abs.toFixed(0)} N·m`;
+}
+
+function drawMomentGlyph(point, moment, labelText = null, radius = 15) {
+  const color = loadStrokeColor();
+  const isCCW = moment > 0; // +Mz is counter-clockwise in world (y-up) and screen (y-down)
+  const sweep = (220 * Math.PI) / 180;
+  const startAngle = isCCW ? 0.55 : Math.PI - 0.55;
+  const endAngle = isCCW ? startAngle - sweep : startAngle + sweep;
+
   ctx.save();
-  ctx.strokeStyle = cssColor("--danger");
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = radius > 12 ? 1.85 : 1.5;
+  ctx.lineCap = "round";
   ctx.beginPath();
-  ctx.arc(point.x, point.y, 22, moment > 0 ? -0.3 : 0.3, moment > 0 ? 4.7 : -4.7, moment < 0);
+  ctx.arc(point.x, point.y, radius, startAngle, endAngle, isCCW);
   ctx.stroke();
+
+  // Sharp tangential arrowhead at arc tip
+  const tipX = point.x + Math.cos(endAngle) * radius;
+  const tipY = point.y + Math.sin(endAngle) * radius;
+  const tx = isCCW ? Math.sin(endAngle) : -Math.sin(endAngle);
+  const ty = isCCW ? -Math.cos(endAngle) : Math.cos(endAngle);
+  const headAngle = Math.atan2(ty, tx);
+  const headSize = radius > 12 ? 7.5 : 6;
+  ctx.beginPath();
+  ctx.moveTo(tipX + Math.cos(headAngle) * 1.5, tipY + Math.sin(headAngle) * 1.5);
+  ctx.lineTo(tipX - headSize * Math.cos(headAngle - 0.42), tipY - headSize * Math.sin(headAngle - 0.42));
+  ctx.lineTo(tipX - headSize * Math.cos(headAngle + 0.42), tipY - headSize * Math.sin(headAngle + 0.42));
+  ctx.closePath();
+  ctx.fill();
+
+  if (labelText) {
+    drawPillLabel(labelText, point.x, point.y - radius - 11, color, {
+      align: "center",
+      fontSize: 11,
+      paddingX: 4,
+      paddingY: 1.5,
+    });
+  }
   ctx.restore();
 }
 
 function drawDeformedShape() {
   const factor = Number(els.deformScale.value || 1);
   ctx.save();
-  ctx.strokeStyle = cssColor("--accent");
-  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = cssColor("--teal") || cssColor("--accent");
+  ctx.setLineDash([6, 4]);
   ctx.lineWidth = 2;
   for (const element of state.elements) {
     const nodeI = getNode(element.node_i);
@@ -4674,45 +5312,61 @@ function elementScreenPath(element) {
 
 function drawDiagrams() {
   if (!dctx) return;
-  dctx.clearRect(0, 0, diagramCanvas.width, diagramCanvas.height);
-  dctx.fillStyle = cssColor("--surface");
-  dctx.fillRect(0, 0, diagramCanvas.width, diagramCanvas.height);
+  const { width, height, dpr } = canvasMetrics.diagram;
+  dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  dctx.clearRect(0, 0, width, height);
+  dctx.fillStyle = cssColor("--canvas");
+  dctx.fillRect(0, 0, width, height);
 
   if (!state.result) {
     dctx.fillStyle = cssColor("--muted");
-    dctx.font = "14px Segoe UI, Arial, sans-serif";
-    dctx.fillText("求解后在此分开展示剪力图 V、弯矩图 M、轴力图 N、应力和应变图。", 24, 38);
+    dctx.font = `12px ${CANVAS_SANS_FONT}`;
+    dctx.fillText("求解后在此分开展示弯矩图 M、剪力图 V、轴力图 N 及应力-应变关系。", 18, 28);
     return;
   }
 
-  const specs = selectedDiagramSpecs();
-  if (specs.length === 0) {
+  const mode = state.diagramFilterMode || "all";
+  let specs = [];
+  let showStressStrain = false;
+  if (mode === "m") {
+    specs = [{ component: "m", symbol: "M", unit: "kN·m", scale: 1 / 1000, color: cssColor("--warn") }];
+  } else if (mode === "v") {
+    specs = [{ component: "v", symbol: "V", unit: "kN", scale: 1 / 1000, color: loadStrokeColor() }];
+  } else if (mode === "n") {
+    specs = [{ component: "n", symbol: "N", unit: "kN", scale: 1 / 1000, color: cssColor("--blue") }];
+  } else if (mode === "stress_strain") {
+    showStressStrain = true;
+  } else {
+    specs = selectedDiagramSpecs();
+    showStressStrain = els.stressStrainToggle.checked || state.solveOptions.includes("stress_strain");
+  }
+
+  const chartCount = specs.length + (showStressStrain ? 1 : 0);
+  if (chartCount === 0) {
     dctx.fillStyle = cssColor("--muted");
-    dctx.font = "14px Segoe UI, Arial, sans-serif";
-    dctx.fillText("当前未选择要显示的图形。", 24, 38);
+    dctx.font = `12px ${CANVAS_SANS_FONT}`;
+    dctx.fillText("当前未选择要显示的图形，可在右侧检查器或上方标签选择。", 18, 28);
     return;
   }
 
-  const stressStrain = els.stressStrainToggle.checked || state.solveOptions.includes("stress_strain");
-  const chartCount = specs.length + (stressStrain ? 1 : 0);
-  const gap = chartCount > 4 ? 10 : 16;
-  const topMargin = chartCount > 4 ? 12 : 18;
-  const chartHeight = Math.max(28, (diagramCanvas.height - topMargin * 2 - gap * (chartCount - 1)) / chartCount);
+  const gap = chartCount > 2 ? 8 : 12;
+  const topMargin = chartCount > 2 ? 8 : 10;
+  const chartHeight = Math.max(46, (height - topMargin * 2 - gap * (chartCount - 1)) / chartCount);
   let top = topMargin;
   for (const spec of specs) {
     drawSingleDiagram(spec, top, chartHeight);
     top += chartHeight + gap;
   }
-  if (stressStrain) drawStressStrainDiagram(top, chartHeight);
+  if (showStressStrain) drawStressStrainDiagram(top, chartHeight);
 }
 
 function selectedDiagramSpecs() {
   const specs = [];
-  if (els.shearToggle.checked) {
-    specs.push({ component: "v", symbol: "V", unit: "kN", scale: 1 / 1000, color: cssColor("--danger") });
-  }
   if (els.momentToggle.checked) {
     specs.push({ component: "m", symbol: "M", unit: "kN·m", scale: 1 / 1000, color: cssColor("--warn") });
+  }
+  if (els.shearToggle.checked) {
+    specs.push({ component: "v", symbol: "V", unit: "kN", scale: 1 / 1000, color: loadStrokeColor() });
   }
   if (els.axialToggle.checked) {
     specs.push({ component: "n", symbol: "N", unit: "kN", scale: 1 / 1000, color: cssColor("--blue") });
@@ -4721,47 +5375,58 @@ function selectedDiagramSpecs() {
 }
 
 function drawSingleDiagram(spec, top, height) {
+  const { width } = canvasMetrics.diagram;
   const data = chartData(spec.component);
-  const left = 70;
-  const right = diagramCanvas.width - 28;
-  const topPad = Math.min(18, Math.max(10, height * 0.2));
-  const bottomPad = Math.min(24, Math.max(12, height * 0.24));
+  const left = 72;
+  const right = Math.max(left + 40, width - 24);
+  const topPad = Math.min(18, Math.max(10, height * 0.17));
+  const bottomPad = Math.min(18, Math.max(11, height * 0.19));
   const bottom = top + height - bottomPad;
   const yAxisTop = top + topPad;
-  const y0 = top + height * 0.54;
-  const plotHeight = Math.max(6, Math.min(height * 0.34, Math.max(6, (bottom - yAxisTop) * 0.44)));
+  const y0 = top + height * 0.52;
+  const plotHeight = Math.max(8, Math.min(height * 0.29, (bottom - yAxisTop) * 0.42));
   const maxAbs = Math.max(...data.map((point) => Math.abs(point.value)), 1e-9);
   const totalLength = Math.max(data[data.length - 1]?.x || 1, 1e-9);
   const toX = (x) => left + (x / totalLength) * (right - left);
   const toY = (value) => y0 - (value / maxAbs) * plotHeight;
 
   dctx.save();
+  dctx.fillStyle = cssColor("--surface");
+  dctx.fillRect(8, top, width - 16, height);
   dctx.strokeStyle = cssColor("--line");
   dctx.lineWidth = 1;
-  dctx.strokeRect(8, top, diagramCanvas.width - 16, height);
+  dctx.strokeRect(8.5, Math.round(top) + 0.5, width - 17, Math.round(height));
 
-  dctx.strokeStyle = cssColor("--ink");
-  dctx.lineWidth = 1.3;
-  lineD({ x: left, y: y0 }, { x: right, y: y0 });
-  lineD({ x: left, y: bottom }, { x: left, y: yAxisTop });
-  drawAxisArrowD({ x: right, y: y0 }, "x");
-  drawAxisArrowD({ x: left, y: yAxisTop }, "y");
+  // Translucent area fill between curve and zero baseline
+  dctx.beginPath();
+  dctx.moveTo(toX(data[0].x), y0);
+  data.forEach((point) => {
+    dctx.lineTo(toX(point.x), toY(point.value));
+  });
+  dctx.lineTo(toX(data[data.length - 1].x), y0);
+  dctx.closePath();
+  dctx.fillStyle = hexToAlpha(spec.color, document.body.classList.contains("dark-theme") ? 0.16 : 0.14);
+  dctx.fill();
 
-  dctx.fillStyle = cssColor("--ink");
-  dctx.font = "13px Segoe UI, Arial, sans-serif";
-  dctx.fillText(`${spec.symbol} (${spec.unit})`, 16, top + 18);
-  dctx.fillText("x (m)", right - 34, y0 - 8);
-  dctx.fillText("0", left - 18, y0 + 4);
-  dctx.fillText(`${totalLength.toFixed(2)} m`, right - 50, y0 + 18);
-
-  dctx.strokeStyle = hexToAlpha(spec.color, 0.5);
+  // Subtle vertical ordinate ribs
+  dctx.strokeStyle = hexToAlpha(spec.color, 0.3);
   dctx.lineWidth = 1;
-  for (let index = 0; index < data.length; index += Math.max(1, Math.floor(data.length / 28))) {
+  const step = Math.max(1, Math.floor(data.length / 28));
+  for (let index = 0; index < data.length; index += step) {
     const point = data[index];
     const x = toX(point.x);
     lineD({ x, y: y0 }, { x, y: toY(point.value) });
   }
 
+  // Zero axis and vertical y-axis
+  dctx.strokeStyle = cssColor("--line-strong");
+  dctx.lineWidth = 1.1;
+  lineD({ x: left, y: Math.round(y0) + 0.5 }, { x: right, y: Math.round(y0) + 0.5 });
+  lineD({ x: Math.round(left) + 0.5, y: bottom }, { x: Math.round(left) + 0.5, y: yAxisTop });
+  drawAxisArrowD({ x: right, y: y0 }, "x");
+  drawAxisArrowD({ x: left, y: yAxisTop }, "y");
+
+  // Main diagram curve
   dctx.beginPath();
   data.forEach((point, index) => {
     const x = toX(point.x);
@@ -4770,37 +5435,52 @@ function drawSingleDiagram(spec, top, height) {
     else dctx.lineTo(x, y);
   });
   dctx.strokeStyle = spec.color;
-  dctx.lineWidth = 2.2;
+  dctx.lineWidth = 2;
   dctx.stroke();
 
-  annotateExtrema(data, spec, toX, toY, y0);
+  // Monospace labels
+  dctx.fillStyle = spec.color;
+  dctx.font = `600 11.5px ${CANVAS_MONO_FONT}`;
+  dctx.fillText(`${spec.symbol}`, 16, top + 17);
+  dctx.fillStyle = cssColor("--muted");
+  dctx.font = `10.5px ${CANVAS_MONO_FONT}`;
+  dctx.fillText(`(${spec.unit})`, 16, top + 31);
+  dctx.fillText("x (m)", right - 34, y0 - 7);
+  dctx.fillText("0", left - 14, y0 + 3.5);
+  dctx.fillText(`L = ${totalLength.toFixed(2)} m`, right - 74, top + 14);
+
+  annotateExtrema(data, spec, toX, toY, y0, left, right, top, height);
   dctx.restore();
 }
 
-function annotateExtrema(data, spec, toX, toY, y0) {
+function annotateExtrema(data, spec, toX, toY, y0, left, right, top, height) {
   const extrema = [];
   const maxPoint = data.reduce((best, point) => (point.value > best.value ? point : best), data[0]);
   const minPoint = data.reduce((best, point) => (point.value < best.value ? point : best), data[0]);
   if (Math.abs(maxPoint.value) > 1e-9) extrema.push(maxPoint);
   if (Math.abs(minPoint.value - maxPoint.value) > 1e-9) extrema.push(minPoint);
   dctx.save();
-  dctx.setLineDash([5, 4]);
-  dctx.strokeStyle = cssColor("--muted");
-  dctx.fillStyle = cssColor("--ink");
-  dctx.font = "12px Segoe UI, Arial, sans-serif";
+  dctx.setLineDash([4, 3]);
+  dctx.strokeStyle = hexToAlpha(cssColor("--muted"), 0.55);
+  dctx.font = `11px ${CANVAS_MONO_FONT}`;
   for (const point of extrema) {
     const x = toX(point.x);
     const y = toY(point.value);
     lineD({ x, y }, { x, y: y0 });
-    lineD({ x, y }, { x: 70, y });
     dctx.setLineDash([]);
     dctx.beginPath();
-    dctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    dctx.arc(x, y, 3.2, 0, Math.PI * 2);
     dctx.fillStyle = spec.color;
     dctx.fill();
+    const label = `${formatNumber(point.value)} ${spec.unit}`;
+    const tw = dctx.measureText(label).width;
+    const lx = Math.max(left + 6, Math.min(right - tw - 6, x + 6));
+    const ly = point.value >= 0
+      ? Math.max(top + 13, y - 5)
+      : Math.min(top + height - 6, y + 12);
     dctx.fillStyle = cssColor("--ink");
-    dctx.fillText(`${formatNumber(point.value)} ${spec.unit}`, x + 6, y - 6);
-    dctx.setLineDash([5, 4]);
+    dctx.fillText(label, lx, ly);
+    dctx.setLineDash([4, 3]);
   }
   dctx.restore();
 }
@@ -4830,6 +5510,7 @@ function elementLengthFromModel(element) {
 }
 
 function drawStressStrainDiagram(top, height) {
+  const { width } = canvasMetrics.diagram;
   const peaks = [];
   for (const [id, rows] of Object.entries(state.result.element_diagrams || {})) {
     if (!inScope(id)) continue;
@@ -4840,52 +5521,76 @@ function drawStressStrainDiagram(top, height) {
     }
     if (peak) peaks.push({ stress: Math.abs(peak.stress) / 1e6, strain: Math.abs(peak.strain) * 1e6 });
   }
-  if (!peaks.length) return;
+  const left = 72;
+  const right = Math.max(left + 40, width - 24);
+  const bottom = top + height - Math.min(24, Math.max(12, height * 0.22));
+  const topY = top + Math.min(18, Math.max(10, height * 0.16));
+  const violet = cssColor("--violet") || cssColor("--accent");
+  dctx.save();
+  dctx.fillStyle = cssColor("--surface");
+  dctx.fillRect(8, top, width - 16, height);
+  dctx.strokeStyle = cssColor("--line");
+  dctx.lineWidth = 1;
+  dctx.strokeRect(8.5, Math.round(top) + 0.5, width - 17, Math.round(height));
+  if (!peaks.length) {
+    dctx.fillStyle = cssColor("--muted");
+    dctx.font = `12px ${CANVAS_SANS_FONT}`;
+    dctx.fillText("当前结果未包含应力-应变采样数据。", 20, top + 24);
+    dctx.restore();
+    return;
+  }
   const maxStress = peaks.reduce((value, p) => Math.max(value, p.stress), 0);
   const maxStrain = peaks.reduce((value, p) => Math.max(value, p.strain), 0);
-  const left = 70;
-  const right = diagramCanvas.width - 28;
-  const bottom = top + height - Math.min(28, Math.max(12, height * 0.25));
-  const topY = top + Math.min(18, Math.max(10, height * 0.2));
-  dctx.save();
-  dctx.strokeStyle = cssColor("--line");
-  dctx.strokeRect(8, top, diagramCanvas.width - 16, height);
-  dctx.strokeStyle = cssColor("--ink");
+  dctx.strokeStyle = cssColor("--line-strong");
+  dctx.lineWidth = 1.1;
   lineD({ x: left, y: bottom }, { x: right, y: bottom });
   lineD({ x: left, y: bottom }, { x: left, y: topY });
   drawAxisArrowD({ x: right, y: bottom }, "x");
   drawAxisArrowD({ x: left, y: topY }, "y");
-  dctx.fillStyle = cssColor("--ink");
-  dctx.font = "13px Segoe UI, Arial, sans-serif";
-  dctx.fillText("σ-ε 图", 16, top + 18);
-  dctx.fillText("|ε| (με)", right - 46, bottom - 8);
-  dctx.fillText("|σ| (MPa)", 16, top + 36);
-  dctx.strokeStyle = "#8e24aa";
-  dctx.lineWidth = 2.2;
+  dctx.fillStyle = violet;
+  dctx.font = `600 11.5px ${CANVAS_MONO_FONT}`;
+  dctx.fillText("σ-ε", 16, top + 17);
+  dctx.fillStyle = cssColor("--muted");
+  dctx.font = `10.5px ${CANVAS_MONO_FONT}`;
+  dctx.fillText("|σ| MPa", 16, top + 31);
+  dctx.fillText("|ε| (με)", right - 48, bottom - 7);
+  dctx.strokeStyle = violet;
+  dctx.lineWidth = 2;
   dctx.beginPath();
   for (const peak of peaks) {
+    const px = left + (right - left) * peak.strain / (maxStrain || 1);
+    const py = bottom - (bottom - topY) * peak.stress / (maxStress || 1);
     dctx.moveTo(left, bottom);
-    dctx.lineTo(left + (right - left) * peak.strain / (maxStrain || 1),
-      bottom - (bottom - topY) * peak.stress / (maxStress || 1));
+    dctx.lineTo(px, py);
   }
   dctx.stroke();
-  dctx.fillText(`${formatNumber(maxStrain)} με`, right - 82, bottom + 18);
-  dctx.fillText(`${formatNumber(maxStress)} MPa`, left + 10, topY + 12);
+  for (const peak of peaks) {
+    const px = left + (right - left) * peak.strain / (maxStrain || 1);
+    const py = bottom - (bottom - topY) * peak.stress / (maxStress || 1);
+    dctx.beginPath();
+    dctx.arc(px, py, 3, 0, Math.PI * 2);
+    dctx.fillStyle = violet;
+    dctx.fill();
+  }
+  dctx.fillStyle = cssColor("--ink");
+  dctx.font = `11px ${CANVAS_MONO_FONT}`;
+  dctx.fillText(`${formatNumber(maxStrain)} με`, right - 82, bottom + 15);
+  dctx.fillText(`${formatNumber(maxStress)} MPa`, left + 8, topY + 11);
   dctx.restore();
 }
 
 function drawAxisArrowD(point, axis) {
   dctx.save();
-  dctx.fillStyle = cssColor("--ink");
+  dctx.fillStyle = cssColor("--line-strong");
   dctx.beginPath();
   if (axis === "x") {
     dctx.moveTo(point.x, point.y);
-    dctx.lineTo(point.x - 8, point.y - 4);
-    dctx.lineTo(point.x - 8, point.y + 4);
+    dctx.lineTo(point.x - 7, point.y - 3.5);
+    dctx.lineTo(point.x - 7, point.y + 3.5);
   } else {
     dctx.moveTo(point.x, point.y);
-    dctx.lineTo(point.x - 4, point.y + 8);
-    dctx.lineTo(point.x + 4, point.y + 8);
+    dctx.lineTo(point.x - 3.5, point.y + 7);
+    dctx.lineTo(point.x + 3.5, point.y + 7);
   }
   dctx.closePath();
   dctx.fill();
@@ -4900,7 +5605,7 @@ function lineD(a, b) {
 }
 
 function hexToAlpha(color, alpha) {
-  if (!color.startsWith("#")) return `rgba(0,0,0,${alpha})`;
+  if (!color || !color.startsWith("#")) return `rgba(128,128,128,${alpha})`;
   const value = color.slice(1);
   const int = parseInt(value.length === 3 ? value.replace(/(.)/g, "$1$1") : value, 16);
   const r = (int >> 16) & 255;
@@ -4975,26 +5680,47 @@ function line(a, b) {
   ctx.stroke();
 }
 
-function drawArrow(start, end, color) {
+function drawArrow(start, end, color, headSize = 8.5, lineWidth = 1.8) {
   const angle = Math.atan2(end.y - start.y, end.x - start.x);
+  const shaftEnd = {
+    x: end.x - Math.cos(angle) * (headSize * 0.65),
+    y: end.y - Math.sin(angle) * (headSize * 0.65),
+  };
   ctx.save();
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
-  ctx.lineWidth = 2;
-  line(start, end);
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "round";
+  line(start, shaftEnd);
   ctx.beginPath();
   ctx.moveTo(end.x, end.y);
-  ctx.lineTo(end.x - 10 * Math.cos(angle - Math.PI / 7), end.y - 10 * Math.sin(angle - Math.PI / 7));
-  ctx.lineTo(end.x - 10 * Math.cos(angle + Math.PI / 7), end.y - 10 * Math.sin(angle + Math.PI / 7));
+  ctx.lineTo(end.x - headSize * Math.cos(angle - 0.36), end.y - headSize * Math.sin(angle - 0.36));
+  ctx.lineTo(end.x - headSize * Math.cos(angle + 0.36), end.y - headSize * Math.sin(angle + 0.36));
   ctx.closePath();
   ctx.fill();
+  ctx.restore();
+}
+
+function drawPillLabel(text, x, y, color, options = {}) {
+  const { align = "left", fontSize = 11, paddingX = 4, paddingY = 2 } = options;
+  ctx.save();
+  ctx.font = `500 ${fontSize}px ${CANVAS_MONO_FONT}`;
+  const metrics = ctx.measureText(text);
+  const tw = metrics.width;
+  const th = fontSize + paddingY * 2;
+  const rx = align === "center" ? x - tw / 2 - paddingX : align === "right" ? x - tw - paddingX : x - paddingX;
+  const ry = y - fontSize + 1 - paddingY;
+  ctx.fillStyle = hexToAlpha(cssColor("--canvas"), 0.84);
+  ctx.fillRect(rx, ry, tw + paddingX * 2, th);
+  ctx.fillStyle = color;
+  ctx.fillText(text, rx + paddingX, ry + fontSize + paddingY - 1);
   ctx.restore();
 }
 
 function drawText(text, x, y, color) {
   ctx.save();
   ctx.fillStyle = color;
-  ctx.font = "12px Segoe UI, Arial, sans-serif";
+  ctx.font = `11px ${CANVAS_MONO_FONT}`;
   ctx.fillText(text, x, y);
   ctx.restore();
 }
@@ -5063,6 +5789,11 @@ canvas.addEventListener("mousedown", (event) => {
 canvas.addEventListener("mousemove", (event) => {
   const point = canvasPoint(event);
   state.pointer = point;
+  if (els.staticCoords) {
+    const rawWorld = screenToWorldRaw(point);
+    const displayWorld = els.snapToggle?.checked ? snapWorld(rawWorld) : rawWorld;
+    els.staticCoords.textContent = `x ${displayWorld.x.toFixed(2)} m · y ${displayWorld.y.toFixed(2)} m`;
+  }
   if (state.freeformDraw) {
     const last = state.freeformDraw.path[state.freeformDraw.path.length - 1];
     if (!last || Math.hypot(point.x - last.x, point.y - last.y) > 3) state.freeformDraw.path.push(point);
@@ -5078,6 +5809,8 @@ canvas.addEventListener("mousemove", (event) => {
       pushUndoForInteraction(state.rotateSupport);
       node.support.angle = angleFromSupportDrag(node, point);
       state.result = null;
+      els.resultText.textContent = "暂无结果";
+      renderStructuredResult(null, null, "whole");
       syncUi();
     }
     draw();
@@ -5261,14 +5994,119 @@ els.solidifyNodeButton.addEventListener("click", (event) => {
   els.nodeDialog.close();
 });
 els.elementType.addEventListener("change", setSelectedElementType);
+if (els.elementGeometry) els.elementGeometry.addEventListener("change", syncElementDialogFields);
 els.momentReleaseI.addEventListener("change", () => setSelectedElementReleases("i"));
 els.momentReleaseJ.addEventListener("change", () => setSelectedElementReleases("j"));
 els.setElementLengthButton.addEventListener("click", setSelectedElementLength);
-els.themeButton.addEventListener("click", () => {
-  document.body.classList.toggle("dark-theme");
-  els.themeButton.textContent = document.body.classList.contains("dark-theme") ? "白底" : "黑底";
+
+function applyTheme(theme, persist = true) {
+  const dark = theme !== "light";
+  document.body.classList.toggle("dark-theme", dark);
+  const label = dark ? "磨砂白" : "墨黑";
+  for (const btn of [els.welcomeThemeButton, els.themeButton, els.dynamicsThemeButton]) {
+    if (btn) btn.textContent = label;
+  }
+  if (persist) {
+    try {
+      localStorage.setItem(AUTH_THEME_KEY, dark ? "dark" : "light");
+    } catch (_error) {
+      // Ignore storage errors in restricted contexts.
+    }
+  }
   draw();
+  drawDynamicsScene();
+}
+
+function toggleTheme() {
+  const next = document.body.classList.contains("dark-theme") ? "light" : "dark";
+  applyTheme(next, true);
+}
+
+for (const btn of [els.welcomeThemeButton, els.themeButton, els.dynamicsThemeButton]) {
+  if (btn) btn.addEventListener("click", toggleTheme);
+}
+
+function selectInspectorTab(group, paneId) {
+  const buttons = [...document.querySelectorAll(`.inspector-tab[data-inspector-group="${group}"]`)];
+  if (!buttons.length) return;
+  buttons.forEach((button) => {
+    const active = button.dataset.inspectorPane === paneId;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    const pane = document.getElementById(button.dataset.inspectorPane);
+    if (pane) pane.classList.toggle("hidden", !active);
+  });
+}
+
+document.querySelectorAll(".inspector-tab").forEach((button) => {
+  button.addEventListener("click", () => {
+    selectInspectorTab(button.dataset.inspectorGroup, button.dataset.inspectorPane);
+  });
 });
+
+function setDiagramDrawerExpanded(expanded) {
+  if (!els.diagramDrawer) return;
+  els.diagramDrawer.classList.toggle("collapsed", !expanded);
+  if (els.diagramDrawerToggle) {
+    els.diagramDrawerToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    els.diagramDrawerToggle.textContent = expanded ? "收起图表" : "展开图表";
+  }
+  requestAnimationFrame(() => resizeCanvas());
+}
+
+function setDiagramFilterMode(mode, expandIfCollapsed = true) {
+  state.diagramFilterMode = mode || "all";
+  if (els.diagramModeTabs) {
+    els.diagramModeTabs.querySelectorAll("[data-diagram-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.diagramMode === state.diagramFilterMode);
+    });
+  }
+  if (expandIfCollapsed && els.diagramDrawer?.classList.contains("collapsed")) {
+    setDiagramDrawerExpanded(true);
+  } else {
+    drawDiagrams();
+  }
+}
+
+if (els.diagramDrawerToggle) {
+  els.diagramDrawerToggle.addEventListener("click", () => {
+    const isCollapsed = els.diagramDrawer?.classList.contains("collapsed");
+    setDiagramDrawerExpanded(Boolean(isCollapsed));
+  });
+}
+
+if (els.diagramModeTabs) {
+  els.diagramModeTabs.querySelectorAll("[data-diagram-mode]").forEach((button) => {
+    button.addEventListener("click", () => setDiagramFilterMode(button.dataset.diagramMode, true));
+  });
+}
+
+function setResultViewMode(mode) {
+  state.resultViewMode = mode === "text" ? "text" : "table";
+  const showText = state.resultViewMode === "text";
+  if (els.resultViewTableBtn) els.resultViewTableBtn.classList.toggle("active", !showText);
+  if (els.resultViewTextBtn) els.resultViewTextBtn.classList.toggle("active", showText);
+  if (els.resultStructured) els.resultStructured.classList.toggle("hidden", showText);
+  if (els.resultText) els.resultText.classList.toggle("hidden", !showText);
+}
+
+if (els.resultViewTableBtn) els.resultViewTableBtn.addEventListener("click", () => setResultViewMode("table"));
+if (els.resultViewTextBtn) els.resultViewTextBtn.addEventListener("click", () => setResultViewMode("text"));
+if (els.copyResultButton) {
+  els.copyResultButton.addEventListener("click", async () => {
+    const text = els.resultText?.textContent || "";
+    if (!text || text === "暂无结果") {
+      showToast("暂无可复制的求解结果。");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("已复制求解结果到剪贴板。");
+    } catch (_error) {
+      showToast("浏览器禁止剪贴板访问，可切换「纯文本」手动复制。");
+    }
+  });
+}
 els.loadModeRadios.forEach((radio) => radio.addEventListener("change", syncLoadPanels));
 els.loadDirectionButtons.forEach((button) => button.addEventListener("click", () => setLoadDirection(button.dataset.loadDirection)));
 els.applyLoadToSelectionButton.addEventListener("click", () => {
@@ -5480,6 +6318,9 @@ if (dynamicsCanvas) {
   dynamicsCanvas.addEventListener("mousemove", (event) => {
     const screen = dynamicsCanvasPoint(event);
     const world = dynamicsToWorld(screen);
+    if (els.dynamicsCoords) {
+      els.dynamicsCoords.textContent = `x ${world.x.toFixed(2)} m · y ${world.y.toFixed(2)} m`;
+    }
     if (state.dynamics.fieldPlacement.active && state.dynamics.fieldPlacement.startWorld) {
       state.dynamics.fieldPlacement = DynamicsFieldPlacement.updatePlacement(
         state.dynamics.fieldPlacement,
@@ -5565,13 +6406,16 @@ for (const control of [
   els.snapToggle,
   els.orthogonalToggle,
   els.deformedToggle,
-  els.momentToggle,
-  els.shearToggle,
-  els.axialToggle,
-  els.stressStrainToggle,
   els.deformScale,
 ]) {
   control.addEventListener("input", draw);
+}
+
+for (const control of [els.momentToggle, els.shearToggle, els.axialToggle, els.stressStrainToggle]) {
+  control.addEventListener("input", () => {
+    if (state.diagramFilterMode !== "all") setDiagramFilterMode("all", false);
+    draw();
+  });
 }
 
 document.addEventListener("keydown", (event) => {
@@ -5590,15 +6434,31 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     if (state.activeModule === "dynamics") undoDynamics();
     else undo();
+    return;
   }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
     event.preventDefault();
     if (state.activeModule === "dynamics") redoDynamics();
     else redo();
+    return;
   }
   if (event.key === "Delete" || event.key === "Backspace") {
     if (state.activeModule === "dynamics") deleteSelectedDynamicsObject();
     else deleteSelection();
+    return;
+  }
+  if (
+    state.activeModule === "static" &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !document.querySelector("dialog[open]")
+  ) {
+    const toolShortcut = { v: "select", n: "node", e: "element", s: "support", l: "load" }[event.key.toLowerCase()];
+    if (toolShortcut) {
+      event.preventDefault();
+      setTool(toolShortcut);
+    }
   }
 });
 
@@ -5613,15 +6473,28 @@ window.addEventListener("resize", () => {
   resizeCanvas();
   resizeDynamicsCanvas();
 });
-if (typeof ResizeObserver === "function" && dynamicsCanvas?.parentElement) {
-  let pendingDynamicsResize = 0;
-  const dynamicsResizeObserver = new ResizeObserver(() => {
-    cancelAnimationFrame(pendingDynamicsResize);
-    pendingDynamicsResize = requestAnimationFrame(resizeDynamicsCanvas);
+if (typeof ResizeObserver === "function") {
+  let pendingStaticResize = 0;
+  const staticResizeObserver = new ResizeObserver(() => {
+    cancelAnimationFrame(pendingStaticResize);
+    pendingStaticResize = requestAnimationFrame(resizeCanvas);
   });
-  dynamicsResizeObserver.observe(dynamicsCanvas.parentElement);
+  if (canvas?.parentElement) staticResizeObserver.observe(canvas.parentElement);
+  if (diagramCanvas?.parentElement) staticResizeObserver.observe(diagramCanvas.parentElement);
+
+  if (dynamicsCanvas?.parentElement) {
+    let pendingDynamicsResize = 0;
+    const dynamicsResizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(pendingDynamicsResize);
+      pendingDynamicsResize = requestAnimationFrame(resizeDynamicsCanvas);
+    });
+    dynamicsResizeObserver.observe(dynamicsCanvas.parentElement);
+  }
 }
 applyFontSize(localStorage.getItem(AUTH_FONT_SIZE_KEY), false);
+applyTheme(localStorage.getItem(AUTH_THEME_KEY) || "dark", false);
+setResultViewMode("table");
+syncElementDialogFields();
 syncLoadPanels();
 initAuth();
 resizeCanvas();

@@ -34,7 +34,7 @@ assert.match(authClient, /"X-CSRF-Token"/);
 assert.match(html, /Leo\s+<span class="li-ion">Li<sup>\+<\/sup><\/span>\s+Studio出品/);
 assert.doesNotMatch(html, /Li⁺|Li\+/);
 assert.match(html, /<body class="dark-theme">/);
-assert.match(css, /body\.dark-theme\s*\{[^}]*--bg:\s*#020304;/s);
-assert.match(css, /\.manual-download-card\s*\{[^}]*linear-gradient\(120deg/s);
+assert.match(css, /body\.dark-theme\s*\{[^}]*--bg:\s*#0e0e10;/s);
+assert.match(css, /\.manual-download-card\s*\{[^}]*background:\s*var\(--surface-subtle\)/s);
 
 console.log("auth-ui-contract: 22 checks passed");
