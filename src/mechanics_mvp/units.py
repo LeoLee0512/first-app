@@ -29,6 +29,8 @@ UNIT_FACTORS: dict[str, float] = {
     "kPa": 1_000.0,
     "MPa": 1_000_000.0,
     "GPa": 1_000_000_000.0,
+    "N/mm^2": 1e6,
+    "MN*m": 1e6,
     "N*m": 1.0,
     "kN*m": 1_000.0,
     "N/m": 1.0,
@@ -63,6 +65,8 @@ UNIT_DIMENSIONS: dict[str, str] = {
     "kPa": "pressure",
     "MPa": "pressure",
     "GPa": "pressure",
+    "N/mm^2": "pressure",
+    "MN*m": "moment",
     "N*m": "moment",
     "kN*m": "moment",
     "N/m": "force_per_length",
@@ -84,7 +88,7 @@ UNIT_DIMENSIONS: dict[str, str] = {
 
 _QUANTITY_RE = re.compile(
     r"^\s*(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
-    r"(?:\s*(?P<unit>[A-Za-z0-9_*/^.\-]+))?\s*$"
+    r"(?:\s*(?P<unit>[^\r\n]+?))?\s*$"
 )
 
 
@@ -144,7 +148,8 @@ def factor(unit: str) -> float:
 
 
 def normalize_unit(unit: str) -> str:
-    return unit.strip().replace(" ", "").replace("·", "*")
+    cleaned = "".join(unit.split()).translate(str.maketrans({"²": "^2", "³": "^3", "⁴": "^4", "·": "*", "⋅": "*"}))
+    return re.sub(r"^(m|cm|mm)([234])$", r"\1^\2", cleaned)
 
 
 def from_si(value: float, unit: str) -> float:

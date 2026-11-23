@@ -16,11 +16,16 @@ Computational Mechanics Solver 是一个带浏览器建模界面的二维静力�
 - 内力图符号约定：轴力 N 以拉为正；弯矩 M 以杆件下侧（局部 -y 侧）受拉为正；剪力 V 取截面左侧横向力之和。杆端力 `n_i/v_i/m_i` 等是节点作用在杆端上的力，与内力图约定不同。
 - 均布力偶 `uniform_moment_local`（强度 `mz`，单位 N·m/m 或 kN·m/m，逆时针为正）：一致节点荷载 [0, −m, 0, 0, +m, 0]，弯矩图叠加 −m·x。
 - 倾斜支座：节点 `support_angle`（度，逆时针为正，0 表示地面在节点下方）；约束在支座局部轴上施加，倾斜节点同时输出全局 `fx`、`fy` 反力分量。
-- 体系判断：求解结果 `summary.system` 给出 W = 3N − 3m + h − r − N_pin（h 为铰接杆端数，N_pin 为全铰节点数）、超静定次数和 unstable / determinate / indeterminate 分类；求解前检查刚度矩阵的秩，秩亏时报错并区分 W > 0 与约束布置不当。
+- 体系判断：求解结果 `summary.system` 给出 W = 3N − 3m + h − r − c − N_pin（h 为铰接杆端数，c 为耦合平移约束数，N_pin 为全铰节点数）、超静定次数和 unstable / determinate / indeterminate 分类；求解前检查刚度矩阵的秩，秩亏时报错并区分 W > 0 与约束布置不当。
 - 弧形、直角、任意形状杆件在前端沿绘制路径离散为多段直杆（子节点 `E1.n1…`、子杆件 `E1.s1…`）后求解，结果按母杆件合并；后端只接受 `frame`、`rigid`、`truss` 直杆。
+- 直接读入网页保存的工程时支持 `support.angle`。未离散的曲杆需要先在画布求解入口离散化。二维入口拒绝非零面外荷载。空间支座的 `support_angle` 绕全局 z 轴旋转平移约束。
+- 计算书优先使用显式截面模量 `W`，缺省时才估算。荷载点摘要给出本工况总响应与该节点合力或合矩之比。
 - “选中隔离体”不再截出子模型单独求解，而是整体求解后只显示所选杆件的位移、反力、切口内力（杆端力）、内力图和危险截面。
 - `/api/solve`、`/api/report`、`/api/dynamics-report` 请求体上限 16 MB：超限 413，Content-Length 非法 400，非 JSON 对象 422。
 - 工程保存/打开、模型诊断以及 PDF 计算书。
+- 节点平移耦合：JSON `couplings` 以 `node_i`、`node_j`、`dofs` 表示，当前支持 `ux`、`uy`；耦合节点各自保留转角和节点荷载，可用于同一铰左右独立施力/力偶。
+- 三维空间梁柱后端 `frame3d`：六自由度 `ux/uy/uz/rx/ry/rz`，支持 `frame`、`rigid` 直杆、六分量节点荷载和 `uniform_global` 全局均布荷载。截面通过 `Iy`、`Iz`、`J` 给出双向惯性矩和扭矩常数，未给出 `Iy/Iz` 时沿用 `I`，三维分析必须显式给出 `J`。
+- 三维输出包括六分量位移/反力、`N/Vy/Vz/T/My/Mz` 和合成弯曲危险截面。曲线空间杆件需先离散为直杆；当前不支持三维桁架、三维杆端释放、三维节点耦合以及三维组合应力/应变，报告会明确提示最后一项。
 
 ### 动力学
 
@@ -62,6 +67,7 @@ python -m venv .venv
 ```powershell
 $env:PYTHONPATH = "src"
 .\.venv\Scripts\python.exe -m mechanics_mvp examples/cantilever_beam.json
+.\.venv\Scripts\python.exe -m mechanics_mvp examples/spatial_bent_frame.json --solver frame3d
 ```
 
 ## Docker

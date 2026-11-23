@@ -6,7 +6,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 ARG GIT_COMMIT=unknown
-ARG GIT_DIRTY=false
+ARG GIT_DIRTY=unknown
 
 COPY requirements.txt ./
 RUN pip install \
@@ -32,6 +32,6 @@ VOLUME ["/var/lib/cms"]
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/version', timeout=4).status == 200 else 1)"
+  CMD python -c "import os,sys,urllib.request; r=urllib.request.urlopen('http://127.0.0.1:'+(os.getenv('PORT') or '8765')+'/api/version', timeout=4); sys.exit(0 if r.status == 200 else 1)"
 
 CMD ["python", "run_webapp.py"]

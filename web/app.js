@@ -2265,7 +2265,7 @@ function formatResult(payload, project, scope) {
   }
 
   if (state.solveOptions.includes("stress") || state.solveOptions.includes("strain") || state.solveOptions.includes("stress_strain")) {
-    appendStressStrainSummary(lines, payload, project, elementInScope);
+    appendStressStrainSummary(lines, payload, elementInScope);
   }
 
   const dangerousSections = (summary.dangerous_sections || []).filter((item) => elementInScope(item.element));
@@ -2279,6 +2279,7 @@ function formatResult(payload, project, scope) {
 
   if (state.solveOptions.includes("flexibility")) {
     lines.push("柔度");
+    lines.push("当前工况的等效柔度取节点沿合力方向的总位移除以该节点合力，转动分量按合力矩计算。");
     const flexibility = (summary.load_point_flexibility || []).filter((item) => nodeInScope(item.node));
     if (!flexibility.length) lines.push("- 当前荷载点没有可计算的柔度结果。");
     for (const item of flexibility) {
@@ -2298,8 +2299,9 @@ function formatResult(payload, project, scope) {
   lines.push("5. 由 {R}=[K]{u}-{P} 得到支座反力，由杆端位移反算 Ni、Vi、Mi、Nj、Vj、Mj，并沿杆长插值得到 N/V/M 图。");
   lines.push("   内力图符号约定：轴力 N 以拉为正、压为负；弯矩 M 以杆件下侧（局部 -y 侧）受拉为正；剪力 V 取截面左侧横向力之和。");
   if (state.solveOptions.includes("stress") || state.solveOptions.includes("strain") || state.solveOptions.includes("stress_strain")) {
-    lines.push("6. 应力按 σ=N/A+M·c/I 估算，应变按 ε=σ/E 计算；当前 c 取等效截面高度 sqrt(A)/2。");
+    lines.push("6. 按各杆件的截面和材料计算两侧边缘应力 σ=N/A±M/W，取绝对值较大的一侧，应变为 ε=σ/E。缺少 W 时取 W=I/c，c=√A/2。");
   }
+  if (summary.extrema_sampled) lines.push("高阶荷载的极值取自采样截面，实际峰值可能位于采样点之间。");
   return lines.join("\n");
 }
 
@@ -2407,17 +2409,17 @@ function resultExtrema(payload, component, scale = 1, include = () => true) {
   };
 }
 
-function appendStressStrainSummary(lines, payload, project, include = () => true) {
+function appendStressStrainSummary(lines, payload, include = () => true) {
   const values = [];
   for (const [elementId, rows] of sortedEntries(payload.element_diagrams || {})) {
     if (!include(elementId)) continue;
     for (const row of rows || []) {
-      const stress = stressAtProjectRow(row, project);
+      if (!Number.isFinite(row.stress) || !Number.isFinite(row.strain)) continue;
       values.push({
         element: elementId,
         x: Number(row.x || 0),
-        stress: stress / 1e6,
-        strain: (stress / projectElasticModulus(project)) * 1e6,
+        stress: row.stress / 1e6,
+        strain: row.strain * 1e6,
       });
     }
   }
@@ -2432,19 +2434,6 @@ function appendStressStrainSummary(lines, payload, project, include = () => true
     lines.push(`- 最大应变：${formatSigned(maxStrain.strain)} με（${maxStrain.element}, x=${formatNumber(maxStrain.x)} m）`);
   }
   lines.push("");
-}
-
-function stressAtProjectRow(row, project) {
-  const section = (project.sections && project.sections[0]) || {};
-  const area = Math.max(quantityToNumber(section.A || els.sectionA.value, "m^2"), 1e-12);
-  const inertia = Math.max(quantityToNumber(section.I || els.sectionI.value, "m^4"), 1e-18);
-  const c = Math.sqrt(area) / 2;
-  return Number(row.n || 0) / area + (Number(row.m || 0) * c) / inertia;
-}
-
-function projectElasticModulus(project) {
-  const material = (project.materials && project.materials[0]) || {};
-  return Math.max(quantityToNumber(material.E || els.materialE.value, "Pa"), 1);
 }
 
 function systemJudgementText(payload) {
@@ -4826,29 +4815,11 @@ function chartData(component) {
     if (!rows.length) continue;
     const elementLength = rows[rows.length - 1].x || elementLengthFromModel(element);
     for (const row of rows) {
-      data.push({ x: offset + row.x, value: diagramValue(component, row) });
+      data.push({ x: offset + row.x, value: (row[component] || 0) / 1000 });
     }
     offset += elementLength;
   }
   return data.length ? data : [{ x: 0, value: 0 }, { x: 1, value: 0 }];
-}
-
-function diagramValue(component, row) {
-  if (component === "stress") return stressAtRow(row) / 1e6;
-  if (component === "strain") return (stressAtRow(row) / elasticModulusPa()) * 1e6;
-  return (row[component] || 0) / 1000;
-}
-
-function stressAtRow(row) {
-  const area = Math.max(quantityToNumber(els.sectionA.value, "m^2"), 1e-12);
-  const inertia = Math.max(quantityToNumber(els.sectionI.value, "m^4"), 1e-18);
-  const equivalentDepth = Math.sqrt(area);
-  const c = equivalentDepth / 2;
-  return (row.n || 0) / area + ((row.m || 0) * c) / inertia;
-}
-
-function elasticModulusPa() {
-  return Math.max(quantityToNumber(els.materialE.value, "Pa"), 1);
 }
 
 function elementLengthFromModel(element) {
@@ -4859,9 +4830,19 @@ function elementLengthFromModel(element) {
 }
 
 function drawStressStrainDiagram(top, height) {
-  const stressData = chartData("stress");
-  const maxStress = Math.max(...stressData.map((point) => Math.abs(point.value)), 1e-9);
-  const maxStrain = Math.max(...stressData.map((point) => Math.abs(((point.value * 1e6) / elasticModulusPa()) * 1e6)), 1e-9);
+  const peaks = [];
+  for (const [id, rows] of Object.entries(state.result.element_diagrams || {})) {
+    if (!inScope(id)) continue;
+    let peak = null;
+    for (const row of rows) {
+      if (Number.isFinite(row.stress) && Number.isFinite(row.strain)
+          && (!peak || Math.abs(row.stress) > Math.abs(peak.stress))) peak = row;
+    }
+    if (peak) peaks.push({ stress: Math.abs(peak.stress) / 1e6, strain: Math.abs(peak.strain) * 1e6 });
+  }
+  if (!peaks.length) return;
+  const maxStress = peaks.reduce((value, p) => Math.max(value, p.stress), 0);
+  const maxStrain = peaks.reduce((value, p) => Math.max(value, p.strain), 0);
   const left = 70;
   const right = diagramCanvas.width - 28;
   const bottom = top + height - Math.min(28, Math.max(12, height * 0.25));
@@ -4877,13 +4858,16 @@ function drawStressStrainDiagram(top, height) {
   dctx.fillStyle = cssColor("--ink");
   dctx.font = "13px Segoe UI, Arial, sans-serif";
   dctx.fillText("σ-ε 图", 16, top + 18);
-  dctx.fillText("ε (με)", right - 46, bottom - 8);
-  dctx.fillText("σ (MPa)", 16, top + 36);
+  dctx.fillText("|ε| (με)", right - 46, bottom - 8);
+  dctx.fillText("|σ| (MPa)", 16, top + 36);
   dctx.strokeStyle = "#8e24aa";
   dctx.lineWidth = 2.2;
   dctx.beginPath();
-  dctx.moveTo(left, bottom);
-  dctx.lineTo(right, topY);
+  for (const peak of peaks) {
+    dctx.moveTo(left, bottom);
+    dctx.lineTo(left + (right - left) * peak.strain / (maxStrain || 1),
+      bottom - (bottom - topY) * peak.stress / (maxStress || 1));
+  }
   dctx.stroke();
   dctx.fillText(`${formatNumber(maxStrain)} με`, right - 82, bottom + 18);
   dctx.fillText(`${formatNumber(maxStress)} MPa`, left + 10, topY + 12);

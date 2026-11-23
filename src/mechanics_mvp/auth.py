@@ -151,7 +151,7 @@ class AuthService:
         avatar_path: str | None = None
         if avatar_content is not None:
             extension, data = avatar_content
-            avatar_path = f"{user_id}{extension}"
+            avatar_path = f"{uuid.uuid4()}{extension}"
             self._write_avatar(avatar_path, data)
 
         try:
@@ -176,6 +176,8 @@ class AuthService:
                         1,
                     ),
                 )
+                self._finalize_attempt(connection, attempt_id)
+                return self._issue_session(connection, self._locked_user(connection, user_id))
         except Exception as exc:
             if avatar_path:
                 self.avatar_file(avatar_path).unlink(missing_ok=True)
@@ -184,9 +186,6 @@ class AuthService:
             if self.database.is_integrity_error(exc):
                 raise AuthConflictError("该账户名不可用。") from None
             raise
-
-        self._finalize_attempt(attempt_id, True)
-        return self._issue_session(user_id)
 
     def login(
         self,
@@ -217,15 +216,18 @@ class AuthService:
             # The reserved attempt row keeps success=0, recording the failure.
             raise AuthInvalidCredentialsError("用户名或密码错误。")
 
-        if self._hasher.check_needs_rehash(stored_hash):
-            with self.database.transaction() as connection:
+        new_hash = self._hasher.hash(password) if self._hasher.check_needs_rehash(stored_hash) else None
+        with self.database.transaction(immediate=self.database.kind == "sqlite") as connection:
+            current = self._locked_user(connection, user["id"])
+            if current["password_hash"] != stored_hash or not current["is_active"]:
+                raise AuthInvalidCredentialsError("用户名或密码错误。")
+            if new_hash:
                 self.database.execute_on(
-                    connection,
-                    "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-                    (self._hasher.hash(password), _iso(self._now()), user["id"]),
+                    connection, "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+                    (new_hash, _iso(self._now()), user["id"]),
                 )
-        self._finalize_attempt(attempt_id, True)
-        return self._issue_session(str(user["id"]))
+            self._finalize_attempt(connection, attempt_id)
+            return self._issue_session(connection, current)
 
     def session(self, session_token: str) -> SessionView | None:
         record = self._active_session(session_token)
@@ -272,13 +274,18 @@ class AuthService:
     ) -> PublicUser:
         record = self._require_session(session_token, csrf_token)
         display_name = _normalize_display_name(display_name)
-        with self.database.transaction() as connection:
+        with self.database.transaction(immediate=self.database.kind == "sqlite") as connection:
+            current = self._locked_user(connection, str(record["user_id"]))
+            if not current["is_active"]:
+                raise AuthUnauthorizedError("请先登录。")
+            self._ensure_session_active_on(connection, str(record["session_id"]))
             self.database.execute_on(
                 connection,
                 "UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?",
                 (display_name, _iso(self._now()), record["user_id"]),
             )
-        return self._user_by_id(str(record["user_id"]))
+            current["display_name"] = display_name
+            return _public_user(current)
 
     def change_password(
         self,
@@ -298,18 +305,25 @@ class AuthService:
             raise AuthInvalidCredentialsError("原密码不正确。")
 
         now = _iso(self._now())
-        with self.database.transaction() as connection:
+        password_hash = self._hasher.hash(new_password)
+        with self.database.transaction(immediate=self.database.kind == "sqlite") as connection:
+            current = self._locked_user(connection, record["user_id"])
+            if current["password_hash"] != record["password_hash"] or not current["is_active"]:
+                raise AuthInvalidCredentialsError("凭据已变更，请重新登录。")
+            session = self.database.fetch_one_on(connection, "SELECT revoked_at, expires_at FROM sessions WHERE id = ?", (record["session_id"],))
+            if not session or session["revoked_at"] or _parse_iso(session["expires_at"]) <= self._now():
+                raise AuthUnauthorizedError("请重新登录。")
             self.database.execute_on(
                 connection,
                 "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
-                (self._hasher.hash(new_password), now, record["user_id"]),
+                (password_hash, now, record["user_id"]),
             )
             self.database.execute_on(
                 connection,
                 "UPDATE sessions SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL",
                 (now, record["user_id"]),
             )
-        return self._issue_session(str(record["user_id"]))
+            return self._issue_session(connection, current)
 
     def update_avatar(
         self,
@@ -319,18 +333,26 @@ class AuthService:
     ) -> PublicUser:
         record = self._require_session(session_token, csrf_token)
         extension, data = self._validate_avatar(avatar)
-        new_name = f"{record['user_id']}{extension}"
+        new_name = f"{uuid.uuid4()}{extension}"
         self._write_avatar(new_name, data)
-        old_name = record.get("avatar_path")
-        with self.database.transaction() as connection:
-            self.database.execute_on(
-                connection,
-                "UPDATE users SET avatar_path = ?, updated_at = ? WHERE id = ?",
-                (new_name, _iso(self._now()), record["user_id"]),
-            )
-        if old_name and old_name != new_name:
-            self.avatar_file(str(old_name)).unlink(missing_ok=True)
-        return self._user_by_id(str(record["user_id"]))
+        try:
+            with self.database.transaction(immediate=self.database.kind == "sqlite") as connection:
+                current = self._locked_user(connection, record["user_id"])
+                if not current["is_active"]:
+                    raise AuthUnauthorizedError("请先登录。")
+                self._ensure_session_active_on(connection, str(record["session_id"]))
+                old_name = current["avatar_path"]
+                self.database.execute_on(
+                    connection, "UPDATE users SET avatar_path = ?, updated_at = ? WHERE id = ?",
+                    (new_name, _iso(self._now()), record["user_id"]),
+                )
+                current["avatar_path"] = new_name
+        except Exception:
+            self.avatar_file(new_name).unlink(missing_ok=True)
+            raise
+        if old_name:
+            self.avatar_file(old_name).unlink(missing_ok=True)
+        return _public_user(current)
 
     def avatar_file(self, avatar_path: str) -> Path:
         normalized = str(avatar_path).replace("\\", "/")
@@ -342,36 +364,53 @@ class AuthService:
             raise AuthValidationError("头像路径无效。")
         return target
 
-    def _issue_session(self, user_id: str) -> IssuedSession:
+    def _ensure_session_active_on(self, connection: Any, session_id: str) -> None:
+        session = self.database.fetch_one_on(
+            connection,
+            "SELECT revoked_at, expires_at FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        if not session or session["revoked_at"] or _parse_iso(str(session["expires_at"])) <= self._now():
+            raise AuthUnauthorizedError("请重新登录。")
+
+    def _locked_user(self, connection: Any, user_id: str) -> dict[str, Any]:
+        sql = "SELECT * FROM users WHERE id = ?"
+        if self.database.kind == "postgresql":
+            sql += " FOR UPDATE"
+        user = self.database.fetch_one_on(connection, sql, (user_id,))
+        if user is None:
+            raise AuthUnauthorizedError("请先登录。")
+        return user
+
+    def _issue_session(self, connection: Any, user: dict[str, Any]) -> IssuedSession:
         session_token = secrets.token_urlsafe(48)
         csrf_token = self._csrf_token(session_token)
         now_dt = self._now()
         now = _iso(now_dt)
         expires_at = _iso(now_dt + self.config.session_ttl)
-        with self.database.transaction() as connection:
-            self.database.execute_on(
-                connection,
-                """
-                INSERT INTO sessions (
-                    id, user_id, token_hash, csrf_token_hash, created_at,
-                    expires_at, last_seen_at, revoked_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (
-                    str(uuid.uuid4()),
-                    user_id,
-                    _digest(session_token),
-                    _digest(csrf_token),
-                    now,
-                    expires_at,
-                    now,
-                ),
-            )
+        self.database.execute_on(
+            connection,
+            """
+            INSERT INTO sessions (
+                id, user_id, token_hash, csrf_token_hash, created_at,
+                expires_at, last_seen_at, revoked_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                str(uuid.uuid4()),
+                user["id"],
+                _digest(session_token),
+                _digest(csrf_token),
+                now,
+                expires_at,
+                now,
+            ),
+        )
         return IssuedSession(
             session_token=session_token,
             csrf_token=csrf_token,
             expires_at=expires_at,
-            user=self._user_by_id(user_id),
+            user=_public_user(user),
         )
 
     def _active_session(self, session_token: str) -> dict[str, Any] | None:
@@ -475,13 +514,8 @@ class AuthService:
             self._insert_attempt_on(connection, attempt_id, "register", subject_hash, address_hash)
         return attempt_id
 
-    def _finalize_attempt(self, attempt_id: str, success: bool) -> None:
-        with self.database.transaction() as connection:
-            self.database.execute_on(
-                connection,
-                "UPDATE login_attempts SET success = ? WHERE id = ?",
-                (1 if success else 0, attempt_id),
-            )
+    def _finalize_attempt(self, connection: Any, attempt_id: str) -> None:
+        self.database.execute_on(connection, "UPDATE login_attempts SET success = 1 WHERE id = ?", (attempt_id,))
 
     def _attempt_count_on(
         self,
@@ -593,12 +627,17 @@ class AuthService:
     def _write_avatar(self, avatar_path: str, data: bytes) -> None:
         target = self.avatar_file(avatar_path)
         temporary = target.with_suffix(target.suffix + f".{secrets.token_hex(6)}.tmp")
-        temporary.write_bytes(data)
-        temporary.replace(target)
+        try:
+            temporary.write_bytes(data)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _normalize_username(value: str) -> str:
-    username = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+    if not isinstance(value, str):
+        raise AuthValidationError("账户名必须为字符串。")
+    username = unicodedata.normalize("NFKC", value).strip().casefold()
     if not 3 <= len(username) <= 32:
         raise AuthValidationError("账户名长度必须为 3 至 32 个字符。")
     if not all(character.isalnum() or character in "._-" for character in username):
@@ -607,7 +646,9 @@ def _normalize_username(value: str) -> str:
 
 
 def _normalize_display_name(value: str) -> str:
-    display_name = unicodedata.normalize("NFKC", str(value or "")).strip()
+    if not isinstance(value, str):
+        raise AuthValidationError("昵称必须为字符串。")
+    display_name = unicodedata.normalize("NFKC", value).strip()
     if not 1 <= len(display_name) <= 40:
         raise AuthValidationError("昵称长度必须为 1 至 40 个字符。")
     if any(unicodedata.category(character).startswith("C") for character in display_name):

@@ -80,57 +80,62 @@ class Frame2DSolver:
         rotated_loads = support_rotation @ loads
 
         coupling_matrix = _coupling_matrix(project, dof_index)
-        coupling_count = coupling_matrix.shape[0]
-        if coupling_count:
-            rotated_couplings = coupling_matrix @ support_rotation.T
-            solve_stiffness = np.zeros((total_dofs + coupling_count, total_dofs + coupling_count), dtype=float)
-            solve_stiffness[:total_dofs, :total_dofs] = rotated_stiffness
-            solve_stiffness[:total_dofs, total_dofs:] = rotated_couplings.T
-            solve_stiffness[total_dofs:, :total_dofs] = rotated_couplings
-            solve_loads = np.concatenate((rotated_loads, np.zeros(coupling_count, dtype=float)))
-        else:
-            solve_stiffness = rotated_stiffness
-            solve_loads = rotated_loads
-
-        all_dofs = np.arange(total_dofs)
-        free = np.array([index for index in all_dofs if index not in restrained], dtype=int)
-        if coupling_count:
-            free = np.concatenate((free, np.arange(total_dofs, total_dofs + coupling_count, dtype=int)))
-        free = _active_free_dofs(solve_stiffness, solve_loads, free, total_dofs)
-        restrained_array = np.array(restrained, dtype=int)
-
+        restrained_array = np.asarray(restrained, dtype=int)
+        free = np.setdiff1d(np.arange(total_dofs), restrained_array)
+        free = _active_free_dofs(rotated_stiffness, rotated_loads, free, total_dofs)
+        k_ff = rotated_stiffness[np.ix_(free, free)]
+        p_f = rotated_loads[free]
         system = classify_system(project)
+        basis = None
+        constraint_rank = 0
+        if len(coupling_matrix):
+            # Solve in the null space of the independent kinematic constraints.
+            # This keeps stiffness units out of the constraint rank decision.
+            c_free = (coupling_matrix @ support_rotation.T)[:, free]
+            left, singular, right = np.linalg.svd(c_free, full_matrices=True)
+            tolerance = np.finfo(float).eps * max(c_free.shape) * max(1.0, singular.max(initial=0.0))
+            constraint_rank = int(np.count_nonzero(singular > tolerance))
+            basis = right[constraint_rank:].T
+            reduced_k = basis.T @ k_ff @ basis
+            reduced_p = basis.T @ p_f
+            system = classify_system(project, constraint_rank)
+        else:
+            reduced_k, reduced_p = k_ff, p_f
 
-        k_ff = solve_stiffness[np.ix_(free, free)]
-        p_f = solve_loads[free]
-        # A rank-deficient K_ff means a rigid-body mechanism survives the
-        # restraints: either too few of them (W > 0) or an improper layout
-        # (parallel / concurrent reactions) that the count cannot detect.
-        if free.size and np.linalg.matrix_rank(k_ff) < k_ff.shape[0]:
+        if reduced_k.size and np.linalg.matrix_rank(reduced_k) < len(reduced_k):
             raise SolverError(unstable_system_message(system))
-        solution = np.zeros(solve_stiffness.shape[0], dtype=float)
         try:
-            solution[free] = np.linalg.solve(k_ff, p_f)
+            reduced_u = np.linalg.solve(reduced_k, reduced_p)
         except np.linalg.LinAlgError as exc:
             raise SolverError(unstable_system_message(system)) from exc
-
-        displacements = support_rotation.T @ solution[:total_dofs]
-        # Reactions are evaluated in global axes; an inclined support therefore
-        # reports both global components of its single normal reaction.
+        u_free = reduced_u if basis is None else basis @ reduced_u
+        rotated_u = np.zeros(total_dofs)
+        rotated_u[free] = u_free
+        displacements = support_rotation.T @ rotated_u
         reactions_vector = stiffness @ displacements - loads
-        if coupling_count:
-            reactions_vector += coupling_matrix.T @ solution[total_dofs:]
+        if constraint_rank:
+            residual = p_f - k_ff @ u_free
+            multipliers = left[:, :constraint_rank] @ ((right[:constraint_rank] @ residual) / singular[:constraint_rank])
+            reactions_vector += coupling_matrix.T @ multipliers
 
         displacement_map = _map_node_vectors(project, displacements, dof_index)
         reaction_map = _map_reactions(project, reactions_vector, dof_index, restrained_array)
-        element_end_forces = _map_element_forces(
+        element_end_forces, force_tolerances = _map_element_forces(
             project,
             displacements,
             dof_index,
             element_fixed_loads,
         )
-        element_diagrams = _map_element_diagrams(project, element_end_forces, load_integrals)
-        summary = _build_summary(project, displacement_map, reaction_map, element_end_forces, element_diagrams)
+        element_diagrams, extrema_sampled = _map_element_diagrams(project, element_end_forces, load_integrals)
+        summary = _build_summary(
+            project,
+            displacement_map,
+            reaction_map,
+            element_end_forces,
+            element_diagrams,
+            force_tolerances,
+            extrema_sampled=extrema_sampled,
+        )
         summary["system"] = system
 
         return AnalysisResult(
@@ -278,7 +283,7 @@ def _transformation(cosine: float, sine: float) -> np.ndarray:
 
 
 def _consistent_element_load(load: ElementLoad, length: float, transform: np.ndarray) -> np.ndarray:
-    """Equivalent local nodal load by Gauss integration.
+    """Equivalent local nodal load integrated analytically.
 
     `r` is the normalized coordinate x / L. Axial loads use linear shape
     functions; transverse loads use Euler-Bernoulli Hermite functions.
@@ -294,23 +299,18 @@ def _consistent_element_load(load: ElementLoad, length: float, transform: np.nda
         # Hermite functions change value over the element.
         return np.array([0.0, -load.mz, 0.0, 0.0, load.mz, 0.0], dtype=float)
 
+    # Integrate a monomial r^k against the linear axial and cubic Hermite
+    # transverse shapes analytically in r=x/L. No quadrature order cutoff.
     result = np.zeros(6, dtype=float)
-    points, weights = np.polynomial.legendre.leggauss(8)
-    for point, weight in zip(points, weights):
-        r = 0.5 * (float(point) + 1.0)
-        integration_weight = 0.5 * float(weight) * length
-        qx = _evaluate_axis_load(load, "x", r)
-        qy = _evaluate_axis_load(load, "y", r)
-        n1 = 1.0 - r
-        n2 = r
-        h1 = 1.0 - 3.0 * r**2 + 2.0 * r**3
-        h2 = length * (r - 2.0 * r**2 + r**3)
-        h3 = 3.0 * r**2 - 2.0 * r**3
-        h4 = length * (-r**2 + r**3)
-        result += integration_weight * np.array(
-            [n1 * qx, h1 * qy, h2 * qy, n2 * qx, h3 * qy, h4 * qy],
-            dtype=float,
-        )
+    for k, coefficient in enumerate(_axis_polynomial(load, "x")):
+        result[0] += coefficient * length / ((k + 1) * (k + 2))
+        result[3] += coefficient * length / (k + 2)
+    for k, coefficient in enumerate(_axis_polynomial(load, "y")):
+        total = coefficient * length
+        result[1] += total * 6 / ((k + 1) * (k + 3) * (k + 4))
+        result[2] += total * length * 2 / ((k + 2) * (k + 3) * (k + 4))
+        result[4] += total * (k + 6) / ((k + 3) * (k + 4))
+        result[5] -= total * length / ((k + 3) * (k + 4))
     return result
 
 
@@ -532,7 +532,7 @@ def _element_indexes(element: Element, dof_index: dict[tuple[str, str], int]) ->
     ]
 
 
-def classify_system(project: Project) -> dict[str, object]:
+def classify_system(project: Project, independent_couplings: int | None = None) -> dict[str, object]:
     """Kinematic degree-of-freedom count W of the plane structure.
 
     Every member is a rigid body (3 DOFs) and every joint is a rigid body
@@ -541,9 +541,9 @@ def classify_system(project: Project) -> dict[str, object]:
     connection leaves one extra DOF. A joint whose connections are all hinged
     is a pin joint: its own rotation is not a physical DOF, so it is removed
     and an rz restraint at such a joint is not counted. Support restraints
-    remove one DOF each::
+    and coupled translational DOFs each remove one DOF::
 
-        W = 3N - 3m + h - r - N_pin
+        W = 3N - 3m + h - r - c - N_pin
 
     For rigid-jointed frames this is the textbook W = 3N - 3m - r. W > 0 is
     a mechanism; W <= 0 is only a necessary condition for stability, the
@@ -583,6 +583,8 @@ def classify_system(project: Project) -> dict[str, object]:
     joints = len(project.nodes)
     members = len(project.elements)
     coupled_dofs = sum(len(coupling.dofs) for coupling in project.couplings)
+    if independent_couplings is not None:
+        coupled_dofs = independent_couplings
     freedom = 3 * joints - 3 * members + hinged_connections - restraints - coupled_dofs - len(pin_joints)
     if freedom > 0:
         classification = "unstable"
@@ -701,39 +703,136 @@ def _map_element_forces(
     displacements: np.ndarray,
     dof_index: dict[tuple[str, str], int],
     element_fixed_loads: dict[str, np.ndarray],
-) -> dict[str, dict[str, float]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, np.ndarray]]:
+    tolerances: dict[str, np.ndarray] = {}
     labels = ("n_i", "v_i", "m_i", "n_j", "v_j", "m_j")
     result: dict[str, dict[str, float]] = {}
     for element in project.elements:
         indexes = _element_indexes(element, dof_index)
-        local_k, transform, _ = _element_matrices(project, element)
+        local_k, transform, length = _element_matrices(project, element)
         local_displacements = transform @ displacements[indexes]
         fixed_load = element_fixed_loads.get(element.id, np.zeros(6, dtype=float))
+        roundoff = 64 * np.finfo(float).eps * (np.abs(local_k) @ np.abs(transform) @ np.abs(displacements[indexes]) + np.abs(fixed_load))
+        bounds = np.maximum(roundoff[:3], roundoff[3:])
+        bounds[2] += bounds[1] * length
+        tolerances[element.id] = bounds
         local_end_forces = local_k @ local_displacements - fixed_load
         result[element.id] = {
             label: float(local_end_forces[position]) for position, label in enumerate(labels)
         }
-    return result
+    return result, tolerances
+
+
+def _interior_roots(polynomial: np.polynomial.Polynomial, low: float, high: float) -> list[float]:
+    roots, _ = _interior_roots_checked(polynomial, low, high)
+    return roots
+
+
+def _interior_roots_checked(
+    polynomial: np.polynomial.Polynomial, low: float, high: float
+) -> tuple[list[float], bool]:
+    # Finding every root uses a dense companion matrix. Bound that allocation for
+    # high-degree loads; the result and report mark those extrema as sampled.
+    trimmed = polynomial.trim()
+    if trimmed.degree() > 128:
+        return [], True
+    if trimmed.degree() <= 0:
+        return [], False
+    imag_tol = 1e-6 * max(1.0, high - low)
+    return (
+        [
+            float(root.real)
+            for root in trimmed.roots()
+            if abs(root.imag) <= imag_tol and low < root.real < high
+        ],
+        False,
+    )
+
+
+def _critical_positions(
+    integrals: dict, forces: dict, length: float, modulus_over_area: float
+) -> tuple[set[float], bool]:
+    poly = np.polynomial.Polynomial
+    ratios: set[float] = set()
+    truncated = False
+    for key in ("axial_polynomial", "shear_polynomial"):
+        roots, cut = _interior_roots_checked(poly(integrals[key]).deriv(), 0.0, 1.0)
+        ratios.update(roots)
+        truncated = truncated or cut
+    # Between point loads the derivative of the bending moment is a polynomial.
+    slope = poly(integrals["moment_polynomial"]).deriv() + length * forces["v_i"]
+    left = 0.0
+    axial_slope = -poly(integrals["axial_polynomial"]).deriv() * modulus_over_area
+    events = sorted(integrals["point_events"], key=lambda item: item["x"])
+    boundaries = [(event["x"] / length, event["fy"]) for event in events]
+    boundaries.append((1.0, 0.0))
+    for right, shear_jump in boundaries:
+        roots, cut = _interior_roots_checked(slope, left, right)
+        ratios.update(roots)
+        truncated = truncated or cut
+        if np.any(axial_slope.coef) and np.any(slope.coef):
+            # Stationary values on either extreme fibre: W N'/A ± M' = 0.
+            for stress_slope in (axial_slope + slope, axial_slope - slope):
+                roots, cut = _interior_roots_checked(stress_slope, left, right)
+                ratios.update(roots)
+                truncated = truncated or cut
+        slope = slope + length * shear_jump
+        left = right
+    return {r * length for r in ratios}, truncated
+
+
+def _merge_sample_positions(
+    base_positions: list[float],
+    critical_positions: set[float],
+    event_positions: list[float],
+    length: float,
+) -> list[float]:
+    tol = 1e-9 * max(1.0, length)
+    merged: list[float] = list(base_positions)
+    for pos in sorted(critical_positions):
+        if not any(abs(pos - existing) <= tol for existing in merged):
+            merged.append(pos)
+    exact_events: set[float] = set()
+    for x in event_positions:
+        exact_events.add(x)
+        if x > 0.0:
+            exact_events.add(math.nextafter(x, 0.0))
+    # Preserve exact event positions and their left limits unconditionally;
+    # drop only non-event points that would duplicate an event right limit.
+    filtered = [
+        pos for pos in merged
+        if not any(abs(pos - ev) <= tol and pos != ev for ev in event_positions)
+    ]
+    return sorted(set(filtered) | exact_events)
 
 
 def _map_element_diagrams(
     project: Project,
     element_end_forces: dict[str, dict[str, float]],
     load_integrals: dict[str, dict[str, object]],
-) -> dict[str, list[dict[str, float]]]:
+) -> tuple[dict[str, list[dict[str, float]]], bool]:
     diagrams: dict[str, list[dict[str, float]]] = {}
+    extrema_sampled = False
+    sections = {section.id: section for section in project.sections}
+    materials = {material.id: material for material in project.materials}
     for element in project.elements:
+        section = sections[element.section]
+        elastic_modulus = materials[element.material].elastic_modulus
         _, _, length = _element_matrices(project, element)
         forces = element_end_forces[element.id]
         integrals = load_integrals.get(element.id)
         rows: list[dict[str, float]] = []
-        positions = set(np.linspace(0.0, length, 21))
+        base_positions = [float(x) for x in np.linspace(0.0, length, 21)]
         if integrals:
-            for event in integrals.get("point_events", []):
-                x = float(event["x"])
-                positions.add(x)
-                positions.add(max(0.0, x - max(1e-10, length * 1e-10)))
-        for position in sorted(positions):
+            critical, cut = _critical_positions(
+                integrals, forces, length, section.plane_bending_modulus / section.area
+            )
+            extrema_sampled = extrema_sampled or cut
+            event_positions = [float(event["x"]) for event in integrals.get("point_events", [])]
+            positions = _merge_sample_positions(base_positions, critical, event_positions, length)
+        else:
+            positions = base_positions
+        for position in positions:
             q_integral = _load_integrals_at(integrals, position) if integrals else {}
             # Sign conventions along the local x axis of the element:
             # axial N is tension-positive, shear V is the resultant of the
@@ -743,6 +842,7 @@ def _map_element_diagrams(
             axial = -forces["n_i"] - float(q_integral.get("axial", 0.0))
             shear = forces["v_i"] + float(q_integral.get("shear", 0.0))
             moment = -forces["m_i"] + forces["v_i"] * position + float(q_integral.get("moment", 0.0))
+            stress = section.extreme_normal_stress(axial, moment)
             rows.append(
                 {
                     "x": float(position),
@@ -750,10 +850,12 @@ def _map_element_diagrams(
                     "n": float(axial),
                     "v": float(shear),
                     "m": float(moment),
+                    "stress": float(stress),
+                    "strain": float(stress / elastic_modulus),
                 }
             )
         diagrams[element.id] = rows
-    return diagrams
+    return diagrams, extrema_sampled
 
 
 def _load_integrals_at(integrals: dict[str, object], position: float) -> dict[str, float]:
@@ -765,7 +867,7 @@ def _load_integrals_at(integrals: dict[str, object], position: float) -> dict[st
     }
     for event in integrals.get("point_events", []):
         event_x = float(event["x"])
-        if position + 1e-12 < event_x:
+        if position < event_x:
             continue
         # A concentrated local +x force to the left of the section enters the
         # axial resultant exactly like the distributed qx integral; the
@@ -782,9 +884,12 @@ def _build_summary(
     reactions: dict[str, dict[str, float]],
     element_end_forces: dict[str, dict[str, float]],
     element_diagrams: dict[str, list[dict[str, float]]],
+    force_tolerances: dict[str, np.ndarray],
+    *,
+    extrema_sampled: bool = False,
 ) -> dict[str, object]:
-    max_translation = {"node": "", "value": 0.0}
-    max_rotation = {"node": "", "value": 0.0}
+    max_translation = {"node": project.nodes[0].id, "value": 0.0}
+    max_rotation = {"node": project.nodes[0].id, "value": 0.0}
     for node_id, values in displacements.items():
         translation = math.hypot(values.get("ux", 0.0), values.get("uy", 0.0))
         rotation = abs(values.get("rz", 0.0))
@@ -794,13 +899,14 @@ def _build_summary(
             max_rotation = {"node": node_id, "value": float(rotation)}
 
     dangerous = _dangerous_sections(element_diagrams)
-    zero_force_elements = _zero_force_elements(element_end_forces, element_diagrams)
+    zero_force_elements = _zero_force_elements(element_end_forces, element_diagrams, force_tolerances)
     flexibility = _load_point_flexibility(project, displacements)
     reaction_totals = _reaction_totals(reactions)
 
     return {
         "max_translation": max_translation,
         "max_rotation": max_rotation,
+        "extrema_sampled": extrema_sampled,
         "dangerous_sections": dangerous,
         "zero_force_elements": zero_force_elements,
         "load_point_flexibility": flexibility,
@@ -822,36 +928,40 @@ def _dangerous_sections(element_diagrams: dict[str, list[dict[str, float]]]) -> 
                 }
             )
     candidates.sort(key=lambda item: float(item["abs_moment"]), reverse=True)
-    return candidates[:5]
+    unique: list[dict[str, float | str]] = []
+    for candidate in candidates:
+        if any(
+            existing["element"] == candidate["element"]
+            and math.isclose(float(existing["x"]), float(candidate["x"]), rel_tol=1e-9, abs_tol=1e-9)
+            and math.isclose(float(existing["moment"]), float(candidate["moment"]), rel_tol=1e-9, abs_tol=1e-9)
+            for existing in unique
+        ):
+            continue
+        unique.append(candidate)
+        if len(unique) >= 5:
+            break
+    return unique
 
 
 def _zero_force_elements(
     element_end_forces: dict[str, dict[str, float]],
     element_diagrams: dict[str, list[dict[str, float]]],
+    tolerances: dict[str, np.ndarray],
 ) -> list[str]:
-    all_values = [abs(value) for forces in element_end_forces.values() for value in forces.values()]
-    all_values.extend(
-        abs(row[component])
-        for rows in element_diagrams.values()
-        for row in rows
-        for component in ("n", "v", "m")
-    )
-    reference = max(all_values, default=0.0)
-    tolerance = max(1e-6, reference * 1e-8)
-    result: list[str] = []
-    for element_id, forces in element_end_forces.items():
-        values = [abs(value) for value in forces.values()]
-        values.extend(
-            abs(row[component])
-            for row in element_diagrams.get(element_id, [])
-            for component in ("n", "v", "m")
-        )
-        if max(values, default=0.0) <= tolerance:
-            result.append(element_id)
+    result = []
+    for element, end_forces in element_end_forces.items():
+        bounds = tolerances[element]
+        for key, limit in zip(("n", "v", "m"), bounds):
+            if max(abs(end_forces[key + "_i"]), abs(end_forces[key + "_j"])) > limit:
+                break
+            if any(abs(row[key]) > limit for row in element_diagrams[element]):
+                break
+        else:
+            result.append(element)
     return result
 
 
-def _flexibility_load_points(project: Project) -> list[tuple[str, float, float, float]]:
+def _flexibility_load_points(project: Project) -> list[tuple[str, float, float, float, float, float]]:
     points = [(load.node, load.fx, load.fy, load.mz) for load in project.nodal_loads]
     elements = {element.id: element for element in project.elements}
     for load in project.element_loads:
@@ -864,7 +974,19 @@ def _flexibility_load_points(project: Project) -> list[tuple[str, float, float, 
         element = elements[load.element]
         node_id = element.node_i if at_start else element.node_j
         points.append((node_id, load.fx, load.fy, load.mz))
-    return points
+    totals: dict[str, np.ndarray] = {}
+    scales: dict[str, list[float]] = {}
+    for node, fx, fy, mz in points:
+        if node not in totals:
+            totals[node] = np.zeros(3)
+            scales[node] = [0.0, 0.0]
+        totals[node] += (fx, fy, mz)
+        scales[node][0] += math.hypot(fx, fy)
+        scales[node][1] += abs(mz)
+    return [
+        (node, float(fx), float(fy), float(mz), scales[node][0], scales[node][1])
+        for node, (fx, fy, mz) in totals.items()
+    ]
 
 
 def _load_point_flexibility(
@@ -872,10 +994,10 @@ def _load_point_flexibility(
     displacements: dict[str, dict[str, float]],
 ) -> list[dict[str, float | str]]:
     values: list[dict[str, float | str]] = []
-    for node_id, fx, fy, mz in _flexibility_load_points(project):
+    for node_id, fx, fy, mz, force_scale, moment_scale in _flexibility_load_points(project):
         displacement = displacements.get(node_id, {})
         force_magnitude = math.hypot(fx, fy)
-        if force_magnitude > 0.0:
+        if force_magnitude > 1e-12 * force_scale:
             projected = (displacement.get("ux", 0.0) * fx + displacement.get("uy", 0.0) * fy) / force_magnitude
             values.append(
                 {
@@ -886,7 +1008,7 @@ def _load_point_flexibility(
                     "flexibility": projected / force_magnitude,
                 }
             )
-        if abs(mz) > 0.0:
+        if abs(mz) > 1e-12 * moment_scale:
             # Same convention as a force: the printed load is the magnitude,
             # the printed rotation is the component along that moment, and
             # flexibility is that component divided by the magnitude. That

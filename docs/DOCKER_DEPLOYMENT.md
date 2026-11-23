@@ -25,7 +25,7 @@ printf 'POSTGRES_PASSWORD=%s\nCMS_AUTH_SECRET=%s\n' "$(openssl rand -hex 24)" "$
 chmod 600 .env
 
 # 构建并启动（首次约 1–2 分钟；GIT_COMMIT 会显示在 /api/version 里）
-GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
+GIT_DIRTY=$(test -z "$(git status --porcelain)" && echo false || echo true) GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
 docker compose ps                                      # web 与 db 都应为 healthy
 curl -s http://127.0.0.1:8765/api/version              # 应返回 version 1.5.1 与该提交
 
@@ -43,9 +43,12 @@ sudo certbot --nginx -d cms.leomath.cn
 
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | 是 | 数据库密码，同时用于拼接 `CMS_DATABASE_URL` |
+| `POSTGRES_PASSWORD` | 是 | 通过独立的 `PGPASSWORD` 参数传递给 PostgreSQL 客户端 |
 | `CMS_AUTH_SECRET` | 是 | 至少 32 字节的随机值，用于会话签名与审计 |
 | `CMS_PORT` | 否 | 主机上监听的端口，默认 8765，只绑定 127.0.0.1 |
+| `CMS_PUBLIC_ORIGIN` | 否 | 完整外部源，默认 https://cms.leomath.cn。自定义域名或端口时同步设置。 |
+| `CMS_TRUSTED_PROXIES` | 否 | 受信代理 IP/CIDR，以逗号分隔。Compose 默认只信任 Linux 网桥的默认网关；直接运行默认不信任转发头。 |
+| `GIT_DIRTY` | 否 | true 或 false；省略时 API 返回 null，表示构建状态未知。 |
 | `GIT_COMMIT` | 否 | 构建时传入，显示在 `/api/version`；不传显示 unknown |
 
 `CMS_ENV=production`、`CMS_COOKIE_SECURE=true`、`CMS_DATA_DIR=/var/lib/cms` 固定在 `docker-compose.yml` 里。v1.5.1 起没有套餐、会员或内测码，`CMS_INTERNAL_INVITE_*` 不再读取。
@@ -53,7 +56,7 @@ sudo certbot --nginx -d cms.leomath.cn
 ## 更新
 
 ```bash
-cd /opt/cms-docker && git pull && GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
+cd /opt/cms-docker && git pull && GIT_DIRTY=$(test -z "$(git status --porcelain)" && echo false || echo true) GIT_COMMIT=$(git rev-parse HEAD) docker compose up -d --build
 ```
 
 启动时会自动应用 `src/mechanics_mvp/migrations/` 里缺失的迁移。升级前备份：

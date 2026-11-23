@@ -8,8 +8,8 @@ from dataclasses import fields
 import numpy as np
 
 from .models import AnalysisResult, Element, Material, Node, Project, Section, SPATIAL_DOFS
-from .preprocess import ValidationError
-from .solver import SolverError
+from .preprocess import ValidationError, validate_size
+from .solver import SolverError, _interior_roots
 
 REACTION_LABELS = {"ux": "fx", "uy": "fy", "uz": "fz", "rx": "mx", "ry": "my", "rz": "mz"}
 RIGID_STIFFNESS_FACTOR = 1_000_000.0
@@ -61,19 +61,41 @@ class Frame3DSolver:
             if is_restrained
         ]
         free = np.array([index for index in range(total_dofs) if index not in restrained], dtype=int)
-        k_ff = stiffness[np.ix_(free, free)]
+        # support_angle rotates horizontal translational (ux, uy) and rotational
+        # (rx, ry) constraints about the global z axis.
+        support_axes = None
+        if any(_is_inclined(node) for node in project.nodes):
+            support_axes = np.eye(total_dofs)
+            for node in project.nodes:
+                if not _is_inclined(node):
+                    continue
+                i = dof_index[(node.id, "ux")]
+                angle = math.radians(node.support_angle)
+                c, s = math.cos(angle), math.sin(angle)
+                rot2 = ((c, s), (-s, c))
+                support_axes[i : i + 2, i : i + 2] = rot2
+                support_axes[i + 3 : i + 5, i + 3 : i + 5] = rot2
+        if support_axes is None:
+            k_ff = stiffness[np.ix_(free, free)]
+            p_f = loads[free]
+        else:
+            axes_free = support_axes[free]
+            k_ff = axes_free @ stiffness @ axes_free.T
+            p_f = axes_free @ loads
         if free.size and np.linalg.matrix_rank(k_ff) < k_ff.shape[0]:
             raise SolverError("三维体系刚度矩阵奇异：存在机构或约束布置不当，无法求解。")
         displacements = np.zeros(total_dofs, dtype=float)
         try:
-            displacements[free] = np.linalg.solve(k_ff, loads[free])
+            displacements[free] = np.linalg.solve(k_ff, p_f)
         except np.linalg.LinAlgError as exc:
             raise SolverError("三维体系刚度矩阵奇异：存在机构或约束布置不当，无法求解。") from exc
 
+        if support_axes is not None:
+            displacements = support_axes.T @ displacements
         reactions_vector = stiffness @ displacements - loads
         displacement_map = _map_node_vectors(project, displacements, dof_index)
         reaction_map = _map_reactions(project, reactions_vector, dof_index)
-        end_forces = _map_element_forces(
+        end_forces, force_tolerances = _map_element_forces(
             project,
             nodes,
             materials,
@@ -84,11 +106,19 @@ class Frame3DSolver:
             dof_index,
         )
         diagrams = _map_diagrams(project, transforms, end_forces, distributed_loads)
-        summary = _build_summary(project, displacement_map, reaction_map, end_forces, diagrams)
+        summary = _build_summary(
+            project,
+            displacement_map,
+            reaction_map,
+            end_forces,
+            diagrams,
+            force_tolerances,
+        )
         return AnalysisResult(displacement_map, reaction_map, end_forces, diagrams, summary)
 
 
 def _validate_spatial_project(project: Project) -> None:
+    validate_size(project, 3)
     for collection in (project.nodes, project.materials, project.sections, project.nodal_loads, project.element_loads):
         for item in collection:
             for field in fields(item):
@@ -129,7 +159,10 @@ def _validate_spatial_project(project: Project) -> None:
     for load in project.nodal_loads:
         if load.node not in nodes:
             raise ValidationError(f"Nodal load references missing node {load.node}.")
+    element_ids = {element.id for element in project.elements}
     for load in project.element_loads:
+        if load.element not in element_ids:
+            raise ValidationError(f"Element load references missing element {load.element}.")
         if load.kind != "uniform_global":
             raise ValidationError("frame3d 当前杆件分布荷载仅支持 uniform_global。")
 
@@ -234,13 +267,22 @@ def _map_node_vectors(project: Project, vector: np.ndarray, dof_index: dict[tupl
     }
 
 
+def _is_inclined(node: Node) -> bool:
+    return abs(math.remainder(float(node.support_angle), 360.0)) > 1e-9
+
+
 def _map_reactions(project: Project, vector: np.ndarray, dof_index: dict[tuple[str, str], int]) -> dict[str, dict[str, float]]:
     result: dict[str, dict[str, float]] = {}
     for node in project.nodes:
+        inclined = _is_inclined(node)
+        inclined_trans = inclined and any(node.restraints_3d[:2])
+        inclined_rot = inclined and any(node.restraints_3d[3:5])
         values = {
             REACTION_LABELS[dof]: float(vector[dof_index[(node.id, dof)]])
             for dof, restrained in zip(SPATIAL_DOFS, node.restraints_3d)
             if restrained
+            or (inclined_trans and dof in ("ux", "uy"))
+            or (inclined_rot and dof in ("rx", "ry"))
         }
         if values:
             result[node.id] = values
@@ -256,17 +298,26 @@ def _map_element_forces(
     fixed_loads: dict[str, np.ndarray],
     displacements: np.ndarray,
     dof_index: dict[tuple[str, str], int],
-) -> dict[str, dict[str, float]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, np.ndarray]]:
     labels = ("n_i", "vy_i", "vz_i", "t_i", "my_i", "mz_i", "n_j", "vy_j", "vz_j", "t_j", "my_j", "mz_j")
     result: dict[str, dict[str, float]] = {}
+    tolerances: dict[str, np.ndarray] = {}
     for element in project.elements:
-        local_k, _, _, _ = _element_data(nodes, materials, sections, element)
+        local_k, _, _, length = _element_data(nodes, materials, sections, element)
         transform, _, _ = transforms[element.id]
         indexes = _element_indexes(element, dof_index)
         local_displacements = transform @ displacements[indexes]
-        values = local_k @ local_displacements - fixed_loads.get(element.id, np.zeros(12, dtype=float))
+        fixed = fixed_loads.get(element.id, np.zeros(12, dtype=float))
+        roundoff = 64 * np.finfo(float).eps * (
+            np.abs(local_k) @ np.abs(transform) @ np.abs(displacements[indexes]) + np.abs(fixed)
+        )
+        bounds = np.maximum(roundoff[:6], roundoff[6:])
+        bounds[4] += bounds[2] * length
+        bounds[5] += bounds[1] * length
+        tolerances[element.id] = bounds
+        values = local_k @ local_displacements - fixed
         result[element.id] = {label: float(values[index]) for index, label in enumerate(labels)}
-    return result
+    return result, tolerances
 
 
 def _map_diagrams(
@@ -281,9 +332,17 @@ def _map_diagrams(
         forces = end_forces[element.id]
         loads = distributed_loads.get(element.id, [])
         rows: list[dict[str, float]] = []
-        for position in np.linspace(0.0, length, 21):
-            q = sum(loads, np.zeros(3, dtype=float))
-            qx, qy, qz = (float(value) for value in q)
+        qx, qy, qz = sum(loads, np.zeros(3, dtype=float))
+        poly = np.polynomial.Polynomial
+        my_curve = poly([-forces["my_i"], -forces["vz_i"], -qz / 2])
+        mz_curve = poly([-forces["mz_i"], forces["vy_i"], qy / 2])
+        positions = [float(x) for x in np.linspace(0.0, length, 21)]
+        tol = 1e-9 * max(1.0, length)
+        for curve in (my_curve, mz_curve, my_curve**2 + mz_curve**2):
+            for root in _interior_roots(curve.deriv(), 0.0, length):
+                if not any(abs(root - existing) <= tol for existing in positions):
+                    positions.append(root)
+        for position in sorted(positions):
             n = -forces["n_i"] - qx * position
             vy = forces["vy_i"] + qy * position
             vz = forces["vz_i"] + qz * position
@@ -307,15 +366,35 @@ def _map_diagrams(
     return result
 
 
+def _zero_force_elements_3d(
+    end_forces: dict[str, dict[str, float]],
+    diagrams: dict[str, list[dict[str, float]]],
+    tolerances: dict[str, np.ndarray],
+) -> list[str]:
+    keys = ("n", "vy", "vz", "t", "my", "mz")
+    result: list[str] = []
+    for element_id, forces in end_forces.items():
+        bounds = tolerances[element_id]
+        for key, limit in zip(keys, bounds):
+            if max(abs(forces[f"{key}_i"]), abs(forces[f"{key}_j"])) > limit:
+                break
+            if any(abs(row[key]) > limit for row in diagrams[element_id]):
+                break
+        else:
+            result.append(element_id)
+    return result
+
+
 def _build_summary(
     project: Project,
     displacements: dict[str, dict[str, float]],
     reactions: dict[str, dict[str, float]],
     end_forces: dict[str, dict[str, float]],
     diagrams: dict[str, list[dict[str, float]]],
+    force_tolerances: dict[str, np.ndarray],
 ) -> dict[str, object]:
-    max_translation = {"node": "", "value": 0.0}
-    max_rotation = {"node": "", "value": 0.0}
+    max_translation = {"node": project.nodes[0].id, "value": 0.0}
+    max_rotation = {"node": project.nodes[0].id, "value": 0.0}
     for node_id, values in displacements.items():
         translation = math.sqrt(sum(values[dof] ** 2 for dof in ("ux", "uy", "uz")))
         rotation = math.sqrt(sum(values[dof] ** 2 for dof in ("rx", "ry", "rz")))
@@ -323,12 +402,24 @@ def _build_summary(
             max_translation = {"node": node_id, "value": translation}
         if rotation > max_rotation["value"]:
             max_rotation = {"node": node_id, "value": rotation}
-    dangerous = [
+    candidates = [
         {"element": element_id, "x": row["x"], "ratio": row["ratio"], "moment": row["bending"], "abs_moment": row["bending"], "torsion": row["t"]}
         for element_id, rows in diagrams.items()
         for row in rows
     ]
-    dangerous.sort(key=lambda item: item["abs_moment"], reverse=True)
+    candidates.sort(key=lambda item: item["abs_moment"], reverse=True)
+    dangerous: list[dict[str, object]] = []
+    for candidate in candidates:
+        if any(
+            existing["element"] == candidate["element"]
+            and math.isclose(float(existing["x"]), float(candidate["x"]), rel_tol=1e-9, abs_tol=1e-9)
+            and math.isclose(float(existing["moment"]), float(candidate["moment"]), rel_tol=1e-9, abs_tol=1e-9)
+            for existing in dangerous
+        ):
+            continue
+        dangerous.append(candidate)
+        if len(dangerous) >= 5:
+            break
     restraints = sum(sum(node.restraints_3d) for node in project.nodes)
     freedom = 6 * len(project.nodes) - 6 * len(project.elements) - restraints
     classification = "unstable" if freedom > 0 else ("determinate" if freedom == 0 else "indeterminate")
@@ -341,12 +432,8 @@ def _build_summary(
         "backend": "frame3d",
         "max_translation": max_translation,
         "max_rotation": max_rotation,
-        "dangerous_sections": dangerous[:5],
-        "zero_force_elements": [
-            element_id
-            for element_id, rows in diagrams.items()
-            if max((abs(row[key]) for row in rows for key in ("n", "vy", "vz", "t", "my", "mz")), default=0.0) <= 1e-6
-        ],
+        "dangerous_sections": dangerous,
+        "zero_force_elements": _zero_force_elements_3d(end_forces, diagrams, force_tolerances),
         "load_point_flexibility": [],
         "reaction_totals": totals,
         "system": {

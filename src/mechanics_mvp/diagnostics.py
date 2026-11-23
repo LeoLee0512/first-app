@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 
 from .models import Project
@@ -33,7 +34,7 @@ def diagnose_project(project: Project) -> ModelDiagnostics:
     issues: list[DiagnosticIssue] = []
 
     node_ids = [node.id for node in project.nodes]
-    duplicate_nodes = sorted({node_id for node_id in node_ids if node_ids.count(node_id) > 1})
+    duplicate_nodes = sorted(node for node, count in Counter(node_ids).items() if count > 1)
     for node_id in duplicate_nodes:
         issues.append(
             DiagnosticIssue(
@@ -187,6 +188,16 @@ def _connected_components(project: Project) -> list[list[str]]:
         if element.node_i in adjacency and element.node_j in adjacency:
             adjacency[element.node_i].add(element.node_j)
             adjacency[element.node_j].add(element.node_i)
+
+    for coupling in project.couplings:
+        if (
+            coupling.node_i != coupling.node_j
+            and any(dof in ("ux", "uy") for dof in coupling.dofs)
+            and coupling.node_i in adjacency
+            and coupling.node_j in adjacency
+        ):
+            adjacency[coupling.node_i].add(coupling.node_j)
+            adjacency[coupling.node_j].add(coupling.node_i)
 
     visited: set[str] = set()
     components: list[list[str]] = []

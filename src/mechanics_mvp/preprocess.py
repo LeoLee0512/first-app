@@ -29,7 +29,21 @@ MAX_SOLVE_NODES = 500
 MAX_SOLVE_DOFS = MAX_SOLVE_NODES * len(DOFS)
 
 
+def validate_size(project: Project, dimension: int = 2) -> None:
+    nodes = len(project.nodes)
+    dofs_per_node = 6 if dimension == 3 else 3
+    dofs = nodes * dofs_per_node
+    constraints = sum(len(item.dofs) for item in project.couplings)
+    if dofs + constraints > MAX_SOLVE_DOFS:
+        matrix_desc = "三维 6N×6N" if dimension == 3 else "二维 3N×3N"
+        raise ValidationError(
+            f"模型超过求解规模上限：最多 {MAX_SOLVE_DOFS // dofs_per_node} 个节点，"
+            f"自由度及耦合条件合计最多 {MAX_SOLVE_DOFS}。分配稠密矩阵（{matrix_desc}）之前拒绝。"
+        )
+
+
 def validate_project(project: Project) -> None:
+    validate_size(project)
     for collection in (project.nodes, project.materials, project.sections, project.nodal_loads, project.element_loads, project.couplings):
         for item in collection:
             for field in fields(item):
@@ -37,15 +51,6 @@ def validate_project(project: Project) -> None:
                 values = value if isinstance(value, tuple) else (value,)
                 if any(isinstance(v, (int, float)) and not math.isfinite(v) for v in values):
                     raise ValidationError(f"Non-finite physical value: {field.name}.")
-
-    node_count = len(project.nodes)
-    dof_count = node_count * len(DOFS)
-    if node_count > MAX_SOLVE_NODES or dof_count > MAX_SOLVE_DOFS:
-        raise ValidationError(
-            f"模型超过求解规模上限：最多 {MAX_SOLVE_NODES} 个节点"
-            f"（{MAX_SOLVE_DOFS} 个自由度）。"
-            "超过该上限时，求解和计算书会在分配两块稠密 3N×3N 总刚之前拒绝。"
-        )
 
     _ensure_unique("node", [node.id for node in project.nodes])
     _ensure_unique("material", [material.id for material in project.materials])
@@ -55,6 +60,8 @@ def validate_project(project: Project) -> None:
     for material in project.materials:
         _require_positive(material.elastic_modulus, f"材料 {material.id} 的弹性模量 E ")
     for section in project.sections:
+        if section.section_modulus is not None:
+            _require_positive(section.section_modulus, f"截面 {section.id} 的截面模量 W ")
         _require_positive(section.area, f"截面 {section.id} 的面积 A ")
         _require_positive(section.inertia, f"截面 {section.id} 的惯性矩 I ")
 
@@ -119,10 +126,22 @@ def validate_project(project: Project) -> None:
         raise ValidationError("At least three restrained DOFs are required for a stable 2D model.")
 
     for load in project.nodal_loads:
+        out_of_plane = [
+            name for name, val in (("fz", load.fz), ("mx", load.mx), ("my", load.my)) if val
+        ]
+        if out_of_plane:
+            raise ValidationError(
+                f"Nodal load on node {load.node} has nonzero out-of-plane component(s) "
+                f"({', '.join(out_of_plane)}); use frame3d."
+            )
         if load.node not in nodes:
             raise ValidationError(f"Nodal load references missing node {load.node}.")
 
     for load in project.element_loads:
+        if load.fz:
+            raise ValidationError(
+                f"Element load on element {load.element} has nonzero out-of-plane component fz; use frame3d."
+            )
         if load.element not in elements:
             raise ValidationError(f"Element load references missing element {load.element}.")
         if load.kind not in SUPPORTED_ELEMENT_LOADS:

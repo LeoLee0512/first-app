@@ -87,16 +87,18 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
 
     selected = [item for item in (options or []) if item in OPTION_LABELS]
     enabled = lambda name: not selected or name in selected
+    spatial = result.summary.get("analysis_dimension") == 3
     scope = _report_scope_label(project.metadata.get("report_scope"))
     project_name = project.metadata.get("name", "未命名工程")
     if project_name == "canvas_project":
         project_name = "当前画布工程"
     labels = "、".join(OPTION_LABELS[item] for item in selected) or "完整结构分析"
+    module = "三维线弹性空间梁柱矩阵位移法（含扭转）" if spatial else "二维线弹性梁柱/桁架矩阵位移法"
     lines = [
         "计算力学求解计算书",
         f"生成时间：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %z')}",
         f"工程名称：{project_name}",
-        "求解模块：二维线弹性梁柱/桁架矩阵位移法",
+        f"求解模块：{module}",
         "",
         "求解结果",
         f"求解范围：{scope}",
@@ -111,18 +113,25 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
         "",
     ]
 
-    _append_static_model_inputs(lines, project)
+    _append_static_model_inputs(lines, project, spatial=spatial)
 
     _append_diagnostics(lines, result.summary.get("diagnostics"))
 
     if enabled("displacement"):
         lines.append("节点位移与转角")
         for node_id, values in _sorted_items(result.displacements):
-            lines.append(
-                f"- {node_id}: ux={_fmt(values.get('ux', 0.0) * 1000)} mm，"
-                f"uy={_fmt(values.get('uy', 0.0) * 1000)} mm，"
-                f"θ={_fmt(values.get('rz', 0.0))} rad"
-            )
+            if spatial:
+                lines.append(
+                    f"- {node_id}: ux={_fmt(values.get('ux', 0.0) * 1000)} mm，"
+                    f"uy={_fmt(values.get('uy', 0.0) * 1000)} mm，uz={_fmt(values.get('uz', 0.0) * 1000)} mm；"
+                    f"rx={_fmt(values.get('rx', 0.0))} rad，ry={_fmt(values.get('ry', 0.0))} rad，rz={_fmt(values.get('rz', 0.0))} rad"
+                )
+            else:
+                lines.append(
+                    f"- {node_id}: ux={_fmt(values.get('ux', 0.0) * 1000)} mm，"
+                    f"uy={_fmt(values.get('uy', 0.0) * 1000)} mm，"
+                    f"θ={_fmt(values.get('rz', 0.0))} rad"
+                )
         lines.append("")
 
     if enabled("reaction"):
@@ -131,11 +140,27 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
         inclined = {
             node.id: node.support_angle
             for node in project.nodes
-            if abs(node.support_angle) > 1e-9 and (node.restraints[0] or node.restraints[1])
+            if abs(math.remainder(float(node.support_angle), 360.0)) > 1e-9
+            and (
+                (any(node.restraints_3d[:2]) or any(node.restraints_3d[3:5]))
+                if spatial
+                else (node.restraints[0] or node.restraints[1])
+            )
         }
         if not reactions:
             lines.append("- 未形成支座反力。")
         for node_id, values in reactions:
+            if spatial:
+                note = ""
+                if node_id in inclined:
+                    note = f"（{_fmt(inclined[node_id])}° 斜支座，绕全局 z 轴旋转，反力为全局分量）"
+                lines.append(
+                    f"- {node_id}: Fx={_fmt(values.get('fx', 0.0) / 1000)} kN，"
+                    f"Fy={_fmt(values.get('fy', 0.0) / 1000)} kN，Fz={_fmt(values.get('fz', 0.0) / 1000)} kN；"
+                    f"Mx={_fmt(values.get('mx', 0.0) / 1000)} kN·m，My={_fmt(values.get('my', 0.0) / 1000)} kN·m，"
+                    f"Mz={_fmt(values.get('mz', 0.0) / 1000)} kN·m{note}"
+                )
+                continue
             note = ""
             if node_id in inclined:
                 note = f"（{_fmt(inclined[node_id])}° 斜支座，Fx/Fy 为全局分量）"
@@ -149,21 +174,40 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
     if enabled("internal"):
         lines.append("杆端内力")
         for element_id, values in _sorted_items(result.element_end_forces):
-            lines.append(
-                f"- {element_id}: Ni={_fmt(values.get('n_i', 0.0) / 1000)} kN，"
-                f"Vi={_fmt(values.get('v_i', 0.0) / 1000)} kN，"
-                f"Mi={_fmt(values.get('m_i', 0.0) / 1000)} kN·m；"
-                f"Nj={_fmt(values.get('n_j', 0.0) / 1000)} kN，"
-                f"Vj={_fmt(values.get('v_j', 0.0) / 1000)} kN，"
-                f"Mj={_fmt(values.get('m_j', 0.0) / 1000)} kN·m"
-            )
+            if spatial:
+                lines.append(
+                    f"- {element_id}: Ni={_fmt(values.get('n_i', 0.0) / 1000)} kN，"
+                    f"Vyi={_fmt(values.get('vy_i', 0.0) / 1000)} kN，Vzi={_fmt(values.get('vz_i', 0.0) / 1000)} kN，"
+                    f"Ti={_fmt(values.get('t_i', 0.0) / 1000)} kN·m，Myi={_fmt(values.get('my_i', 0.0) / 1000)} kN·m，"
+                    f"Mzi={_fmt(values.get('mz_i', 0.0) / 1000)} kN·m；Nj={_fmt(values.get('n_j', 0.0) / 1000)} kN，"
+                    f"Vyj={_fmt(values.get('vy_j', 0.0) / 1000)} kN，Vzj={_fmt(values.get('vz_j', 0.0) / 1000)} kN，"
+                    f"Tj={_fmt(values.get('t_j', 0.0) / 1000)} kN·m，Myj={_fmt(values.get('my_j', 0.0) / 1000)} kN·m，"
+                    f"Mzj={_fmt(values.get('mz_j', 0.0) / 1000)} kN·m"
+                )
+            else:
+                lines.append(
+                    f"- {element_id}: Ni={_fmt(values.get('n_i', 0.0) / 1000)} kN，"
+                    f"Vi={_fmt(values.get('v_i', 0.0) / 1000)} kN，"
+                    f"Mi={_fmt(values.get('m_i', 0.0) / 1000)} kN·m；"
+                    f"Nj={_fmt(values.get('n_j', 0.0) / 1000)} kN，"
+                    f"Vj={_fmt(values.get('v_j', 0.0) / 1000)} kN，"
+                    f"Mj={_fmt(values.get('m_j', 0.0) / 1000)} kN·m"
+                )
         lines.append("")
 
     extrema_specs = []
     if enabled("shear"):
-        extrema_specs.append(("剪力 V", "v", 1 / 1000, "kN"))
+        if spatial:
+            extrema_specs.extend((("剪力 Vy", "vy", 1 / 1000, "kN"), ("剪力 Vz", "vz", 1 / 1000, "kN")))
+        else:
+            extrema_specs.append(("剪力 V", "v", 1 / 1000, "kN"))
     if enabled("moment"):
-        extrema_specs.append(("弯矩 M", "m", 1 / 1000, "kN·m"))
+        if spatial:
+            extrema_specs.extend(
+                (("弯矩 My", "my", 1 / 1000, "kN·m"), ("弯矩 Mz", "mz", 1 / 1000, "kN·m"), ("扭矩 T", "t", 1 / 1000, "kN·m"))
+            )
+        else:
+            extrema_specs.append(("弯矩 M", "m", 1 / 1000, "kN·m"))
     if enabled("axial"):
         extrema_specs.append(("轴力 N", "n", 1 / 1000, "kN"))
     if extrema_specs:
@@ -181,7 +225,10 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
         lines.append("")
 
     if enabled("stress") or enabled("strain") or enabled("stress_strain"):
-        _append_stress_strain(lines, project, result, enabled)
+        if spatial:
+            lines.extend(["应力与应变", "- 三维组合应力/应变尚未提供；请使用轴力、双向剪力、双向弯矩和扭矩结果。", ""])
+        else:
+            _append_stress_strain(lines, project, result, enabled)
 
     if enabled("danger"):
         dangerous = result.summary.get("dangerous_sections", [])
@@ -198,6 +245,7 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
     if enabled("flexibility"):
         flexibility = result.summary.get("load_point_flexibility", [])
         lines.append("柔度")
+        lines.append("以下为当前工况的等效柔度，取节点沿合力方向的总位移除以该节点合力，转动分量按合力矩计算。")
         if not flexibility:
             lines.append("- 当前荷载点没有可计算的柔度结果。")
         for item in flexibility:
@@ -219,16 +267,18 @@ def build_report_text(project: Project, result: AnalysisResult, *, options: list
             "",
             "计算推导过程",
             "1. 将界面输入统一换算到 SI 单位：力 N、长度 m、弹性模量 Pa、截面面积 m²、惯性矩 m⁴。",
-            "2. 普通梁柱建立二维梁柱单元局部刚度矩阵；桁架杆只保留轴向刚度；端部铰接通过静力凝聚释放弯矩自由度。",
+            ("2. 建立三维空间梁柱刚度矩阵，包含轴向、双向弯曲和扭转。" if spatial else "2. 普通梁柱建立二维梁柱单元局部刚度矩阵；桁架杆只保留轴向刚度；端部铰接通过静力凝聚释放弯矩自由度。"),
             "3. 用方向余弦构造坐标转换矩阵 T，并按 k=Tᵀk'T 转换到全局坐标系。",
             "4. 将集中荷载和分布荷载换算为等效节点荷载，组装总体方程 [K]{u}={P}。",
-            "5. 按支座约束消去受限自由度，求得节点位移 ux、uy 和转角 θ。",
-            "6. 由 {R}=[K]{u}-{P} 得到支座反力，由杆端位移反算 Ni、Vi、Mi、Nj、Vj、Mj，并沿杆长生成 N/V/M 数据。",
+            ("5. 按六自由度支座约束消去受限自由度，求得 ux、uy、uz 和 rx、ry、rz。" if spatial else "5. 按支座约束消去受限自由度，求得节点位移 ux、uy 和转角 θ。"),
+            ("6. 反算六分量支座反力和杆端力，并沿杆长生成 N、Vy、Vz、T、My、Mz 数据。" if spatial else "6. 由 {R}=[K]{u}-{P} 得到支座反力，由杆端位移反算 Ni、Vi、Mi、Nj、Vj、Mj，并沿杆长生成 N/V/M 数据。"),
         ]
     )
-    if enabled("stress") or enabled("strain") or enabled("stress_strain"):
-        lines.append("7. 组合正应力按 σ=N/A+M·c/I 估算，应变按 ε=σ/E 计算；当前 c 采用等效截面值 sqrt(A)/2。")
+    if not spatial and (enabled("stress") or enabled("strain") or enabled("stress_strain")):
+        lines.append("7. 组合正应力按 σ=N/A±M/W 估算，应变按 ε=σ/E 计算。缺少 W 时使用 I/c，取 c=sqrt(A)/2。")
     _append_static_conclusion(lines, result)
+    if result.summary.get("extrema_sampled"):
+        lines.append("高阶荷载的内力极值和危险截面为采样结果，峰值可能位于采样点之间。")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -289,7 +339,7 @@ def build_text_report_pdf(
     return buffer.getvalue()
 
 
-def _append_static_model_inputs(lines: list[str], project: Project) -> None:
+def _append_static_model_inputs(lines: list[str], project: Project, *, spatial: bool = False) -> None:
     lines.append("模型输入")
     for material in project.materials:
         lines.append(
@@ -297,14 +347,33 @@ def _append_static_model_inputs(lines: list[str], project: Project) -> None:
             f"泊松比={_fmt(material.poisson_ratio)}"
         )
     for section in project.sections:
-        lines.append(
-            f"- 截面 {section.id}: A={_fmt(section.area * 1e6)} mm²，"
-            f"I={_fmt(section.inertia * 1e12)} mm⁴"
-        )
+        if spatial:
+            iy = section.inertia if section.inertia_y is None else section.inertia_y
+            iz = section.inertia if section.inertia_z is None else section.inertia_z
+            lines.append(
+                f"- 截面 {section.id}: A={_fmt(section.area * 1e6)} mm²，"
+                f"Iy={_fmt(iy * 1e12)} mm⁴，Iz={_fmt(iz * 1e12)} mm⁴，"
+                f"J={_fmt((section.torsion_constant or 0.0) * 1e12)} mm⁴"
+            )
+        else:
+            lines.append(
+                f"- 截面 {section.id}: A={_fmt(section.area * 1e6)} mm²，"
+                f"I={_fmt(section.inertia * 1e12)} mm⁴"
+                + (f"，W={_fmt(section.section_modulus * 1e9)} mm³" if section.section_modulus else "")
+            )
     for node in project.nodes:
+        is_inclined = abs(math.remainder(float(node.support_angle), 360.0)) > 1e-9
+        if spatial:
+            restrained = [name for name, active in zip(("ux", "uy", "uz", "rx", "ry", "rz"), node.restraints_3d) if active]
+            lines.append(
+                f"- 节点 {node.id}: x={_fmt(node.x)} m，y={_fmt(node.y)} m，z={_fmt(node.z)} m，"
+                f"约束={','.join(restrained) if restrained else '无'}"
+                + (f"，支座方向={_fmt(node.support_angle)}°（绕全局 z 轴）" if is_inclined else "")
+            )
+            continue
         restrained = [name for name, active in zip(("ux", "uy", "rz"), node.restraints) if active]
         support = ""
-        if abs(node.support_angle) > 1e-9:
+        if is_inclined:
             support = f"，支座方向={_fmt(node.support_angle)}°（逆时针，约束 ux/uy 沿支座轴）"
         lines.append(
             f"- 节点 {node.id}: x={_fmt(node.x)} m，y={_fmt(node.y)} m，"
@@ -320,11 +389,20 @@ def _append_static_model_inputs(lines: list[str], project: Project) -> None:
             f"- 杆件 {element.id}: {element.node_i}->{element.node_j}，类型={element.type}，"
             f"材料={element.material}，截面={element.section}，端部释放={'、'.join(releases) if releases else '无'}"
         )
+    for coupling in project.couplings:
+        lines.append(f"- 节点耦合 {coupling.node_i}<->{coupling.node_j}: 约束={','.join(coupling.dofs)}")
     for load in project.nodal_loads:
-        lines.append(
-            f"- 节点荷载 {load.node}: Fx={_fmt(load.fx / 1000)} kN，"
-            f"Fy={_fmt(load.fy / 1000)} kN，Mz={_fmt(load.mz / 1000)} kN·m"
-        )
+        if spatial:
+            lines.append(
+                f"- 节点荷载 {load.node}: Fx={_fmt(load.fx / 1000)} kN，Fy={_fmt(load.fy / 1000)} kN，"
+                f"Fz={_fmt(load.fz / 1000)} kN，Mx={_fmt(load.mx / 1000)} kN·m，"
+                f"My={_fmt(load.my / 1000)} kN·m，Mz={_fmt(load.mz / 1000)} kN·m"
+            )
+        else:
+            lines.append(
+                f"- 节点荷载 {load.node}: Fx={_fmt(load.fx / 1000)} kN，"
+                f"Fy={_fmt(load.fy / 1000)} kN，Mz={_fmt(load.mz / 1000)} kN·m"
+            )
     for load in project.element_loads:
         lines.append(f"- 杆件荷载 {load.element}: {_element_load_description(load)}")
     lines.append("")
@@ -351,6 +429,11 @@ def _element_load_description(load: ElementLoad) -> str:
             f"类型=局部坐标线性分布荷载，qx(i/j)={_fmt(qx_i / 1000)}/{_fmt(qx_j / 1000)} kN/m，"
             f"qy(i/j)={_fmt(qy_i / 1000)}/{_fmt(qy_j / 1000)} kN/m"
         )
+    if load.kind == "uniform_global":
+        return (
+            f"类型=全局坐标均布荷载，Fx={_fmt(load.fx / 1000)} kN/m，"
+            f"Fy={_fmt(load.fy / 1000)} kN/m，Fz={_fmt(load.fz / 1000)} kN/m"
+        )
     if load.kind == "uniform_moment_local":
         return f"类型=局部坐标均布力偶，m={_fmt(load.mz / 1000)} kN·m/m（逆时针为正）"
     if load.kind == "polynomial_local":
@@ -361,9 +444,12 @@ def _element_load_description(load: ElementLoad) -> str:
 
 
 def _append_static_conclusion(lines: list[str], result: AnalysisResult) -> None:
+    spatial = result.summary.get("analysis_dimension") == 3
     displacements: list[tuple[str, float, dict[str, float]]] = []
     for node_id, values in result.displacements.items():
-        magnitude = math.hypot(float(values.get("ux", 0.0)), float(values.get("uy", 0.0)))
+        magnitude = math.sqrt(
+            sum(float(values.get(dof, 0.0)) ** 2 for dof in (("ux", "uy", "uz") if spatial else ("ux", "uy")))
+        )
         displacements.append((node_id, magnitude, values))
     diagram_points: list[tuple[str, dict[str, float]]] = []
     for element_id, rows in result.element_diagrams.items():
@@ -374,21 +460,25 @@ def _append_static_conclusion(lines: list[str], result: AnalysisResult) -> None:
         node_id, magnitude, values = max(displacements, key=lambda item: item[1])
         lines.append(
             f"- 最大节点平动位移出现在 {node_id}: |u|={_fmt(magnitude * 1000)} mm，"
-            f"ux={_fmt(values.get('ux', 0.0) * 1000)} mm，uy={_fmt(values.get('uy', 0.0) * 1000)} mm。"
+            f"ux={_fmt(values.get('ux', 0.0) * 1000)} mm，uy={_fmt(values.get('uy', 0.0) * 1000)} mm"
+            + (f"，uz={_fmt(values.get('uz', 0.0) * 1000)} mm。" if spatial else "。")
         )
     if diagram_points:
-        moment_element, moment_row = max(diagram_points, key=lambda item: abs(float(item[1].get("m", 0.0))))
-        shear_element, shear_row = max(diagram_points, key=lambda item: abs(float(item[1].get("v", 0.0))))
-        axial_element, axial_row = max(diagram_points, key=lambda item: abs(float(item[1].get("n", 0.0))))
+        moment_key = "bending" if spatial else "m"
+        moment_element, moment_row = max(diagram_points, key=lambda item: abs(float(item[1].get(moment_key, 0.0))))
+        shear_magnitude = lambda row: math.hypot(float(row.get("vy", 0.0)), float(row.get("vz", 0.0))) if spatial else abs(float(row.get("v", 0.0)))
+        _, shear_row = max(diagram_points, key=lambda item: shear_magnitude(item[1]))
+        _, axial_row = max(diagram_points, key=lambda item: abs(float(item[1].get("n", 0.0))))
         lines.append(
-            f"- 最大绝对弯矩：|M|={_fmt(abs(float(moment_row.get('m', 0.0))) / 1000)} kN·m，"
+            f"- 最大绝对弯矩：|M|={_fmt(abs(float(moment_row.get(moment_key, 0.0))) / 1000)} kN·m，"
             f"位于 {moment_element} 的 x={_fmt(moment_row.get('x', 0.0))} m。"
         )
         lines.append(
-            f"- 最大绝对剪力：|V|={_fmt(abs(float(shear_row.get('v', 0.0))) / 1000)} kN；"
+            f"- 最大绝对剪力：|V|={_fmt(shear_magnitude(shear_row) / 1000)} kN；"
             f"最大绝对轴力：|N|={_fmt(abs(float(axial_row.get('n', 0.0))) / 1000)} kN。"
         )
-    lines.append("- 以上结论基于当前二维线弹性、小变形模型；工程使用前应以解析解或成熟软件独立复核。")
+    dimension = "三维" if spatial else "二维"
+    lines.append(f"- 以上结论基于当前{dimension}线弹性、小变形模型；工程使用前应以解析解或成熟软件独立复核。")
 
 
 def _register_report_fonts() -> tuple[str, str]:
@@ -625,6 +715,8 @@ def _append_stress_strain(
     sections = {section.id: section for section in project.sections}
     materials = {material.id: material for material in project.materials}
     rows: list[dict[str, float | str]] = []
+    used_explicit_modulus = False
+    used_estimated_modulus = False
     for element_id, diagram in result.element_diagrams.items():
         element = elements.get(element_id)
         if element is None:
@@ -633,17 +725,18 @@ def _append_stress_strain(
         material = materials.get(element.material)
         if section is None or material is None:
             continue
-        c = math.sqrt(max(section.area, 1e-30)) / 2
+        if section.section_modulus is not None:
+            used_explicit_modulus = True
+        else:
+            used_estimated_modulus = True
         for row in diagram:
-            stress = float(row.get("n", 0.0)) / max(section.area, 1e-30)
-            bending = float(row.get("m", 0.0)) * c / max(section.inertia, 1e-30)
-            stress = max((stress + bending, stress - bending), key=abs)
+            stress = section.extreme_normal_stress(row["n"], row["m"])
             rows.append(
                 {
                     "element": element_id,
                     "x": float(row.get("x", 0.0)),
                     "stress": stress,
-                    "strain": stress / max(material.elastic_modulus, 1e-30),
+                    "strain": stress / material.elastic_modulus,
                 }
             )
     lines.append("应力与应变")
@@ -663,6 +756,12 @@ def _append_stress_strain(
             f"- 最大应变：{_fmt(float(max_strain['strain']) * 1e6)} με"
             f"（{max_strain['element']}, x={_fmt(max_strain['x'])} m）"
         )
+    if used_explicit_modulus and not used_estimated_modulus:
+        lines.append("- 截面模量来源：全部采用输入截面模量 W。")
+    elif used_estimated_modulus and not used_explicit_modulus:
+        lines.append("- 截面模量来源：未提供 W，按等效正方形截面假设 W=I/(√A/2) 估算。")
+    elif used_explicit_modulus and used_estimated_modulus:
+        lines.append("- 截面模量来源：优先采用输入截面模量 W，未提供 W 的截面按等效正方形截面假设 W=I/(√A/2) 估算。")
     lines.append("")
 
 
@@ -678,11 +777,17 @@ def _system_judgement(project: Project, result: AnalysisResult | None = None) ->
     system = (result.summary if result is not None else {}).get("system")
     if isinstance(system, dict) and "degrees_of_freedom" in system:
         freedom = int(system["degrees_of_freedom"])
-        count = (
-            f"W = 3×{system.get('joints', 0)} − 3×{system.get('members', 0)}"
-            f" + {system.get('hinged_connections', 0)} − {system.get('restraints', 0)}"
-            f" − {system.get('pin_joints', 0)} = {freedom}"
-        )
+        if (result.summary if result is not None else {}).get("analysis_dimension") == 3:
+            count = (
+                f"W = 6×{system.get('joints', 0)} − 6×{system.get('members', 0)}"
+                f" − {system.get('restraints', 0)} = {freedom}"
+            )
+        else:
+            count = (
+                f"W = 3×{system.get('joints', 0)} − 3×{system.get('members', 0)}"
+                f" + {system.get('hinged_connections', 0)} − {system.get('restraints', 0)}"
+                f" − {system.get('coupled_dofs', 0)} − {system.get('pin_joints', 0)} = {freedom}"
+            )
         if system.get("classification") == "unstable":
             return f"几何可变体系（常变），{count}"
         if system.get("classification") == "determinate":

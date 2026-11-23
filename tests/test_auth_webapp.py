@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from mechanics_mvp.auth import AuthConfig, AuthService
 from mechanics_mvp.database import Database
-from mechanics_mvp.webapp import MechanicsWebHandler, forwarded_client_address
+from mechanics_mvp.webapp import MechanicsWebHandler, forwarded_client_address, _proxy_networks
 from http.server import ThreadingHTTPServer
 
 
@@ -36,6 +36,7 @@ class AuthWebAppTests(unittest.TestCase):
             ),
         )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MechanicsWebHandler)
+        self.server.trusted_proxies = _proxy_networks("127.0.0.1")
         self.server.auth_service = self.auth_service
         self.server.auth_cookie_secure = False
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -283,17 +284,18 @@ class AuthWebAppTests(unittest.TestCase):
         self.assertEqual(
             forwarded_client_address(
                 Headers({"X-Real-IP": "203.0.113.10", "X-Forwarded-For": "198.51.100.1, 203.0.113.10"}),
-                "10.0.0.8",
+                "10.0.0.8", _proxy_networks("10.0.0.8"),
             ),
             "203.0.113.10",
         )
         self.assertEqual(
             forwarded_client_address(
                 Headers({"X-Forwarded-For": "198.51.100.1, 203.0.113.10"}),
-                "10.0.0.8",
+                "10.0.0.8", _proxy_networks("10.0.0.8"),
             ),
             "203.0.113.10",
         )
+        self.assertEqual(forwarded_client_address({"X-Real-IP": "203.0.113.10"}, "10.0.0.8"), "10.0.0.8")
         self.assertEqual(forwarded_client_address(Headers({"X-Real-IP": "not-an-ip"}), "10.0.0.8"), "10.0.0.8")
 
     def test_registration_bucket_follows_forwarded_client_not_the_proxy(self) -> None:

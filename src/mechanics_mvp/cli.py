@@ -15,12 +15,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Solve a mechanics MVP JSON project.")
     parser.add_argument("project", type=Path, help="Path to a JSON project file.")
     parser.add_argument("--indent", type=int, default=2, help="JSON output indentation.")
-    parser.add_argument("--solver", default="frame2d", help="Solver backend: frame2d or pinn.")
+    parser.add_argument("--solver", default=None, help="Solver backend: frame2d, frame3d or pinn.")
     parser.add_argument("--report", type=Path, help="Optional PDF calculation report path.")
     args = parser.parse_args(argv)
 
-    project = load_project(args.project)
-    result = solve_with_backend(project, args.solver)
+    project = load_project(args.project, args.solver)
+    result = solve_with_backend(project, args.solver or project.metadata.get("solver", "frame2d"))
     if args.report:
         args.report.write_bytes(build_report_pdf(project, result))
     print(

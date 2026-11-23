@@ -116,6 +116,36 @@ class Space3DTests(unittest.TestCase):
         self.assertEqual(project.nodal_loads[0].mx, 3_000.0)
         self.assertEqual(project.element_loads[0].fz, -4_000.0)
 
+    def test_spatial_api_and_report_keep_six_components(self):
+        from mechanics_mvp.report import build_report_text
+        from mechanics_mvp.webapp import solve_project_payload
+
+        raw = {
+            "metadata": {"solver": "frame3d"},
+            "materials": [{"id": "m", "E": "200 GPa", "nu": 0.3}],
+            "sections": [{"id": "s", "A": "10000 mm^2", "I": "80000000 mm^4", "J": "160000000 mm^4"}],
+            "nodes": [
+                {"id": "A", "x": "0 m", "restraints": ["ux", "uy", "uz", "rx", "ry", "rz"]},
+                {"id": "B", "x": "2 m"},
+            ],
+            "elements": [{"id": "E", "node_i": "A", "node_j": "B", "material": "m", "section": "s"}],
+            "loads": {
+                "nodes": [{"node": "B", "fz": "-2 kN", "mx": "3 kN*m"}],
+                "elements": [{"element": "E", "kind": "uniform_global", "fz": "-4 kN/m"}],
+            },
+        }
+
+        result = solve_project_payload(raw)
+        self.assertEqual(result["summary"]["analysis_dimension"], 3)
+        self.assertAlmostEqual(result["reactions"]["A"]["fz"], 10_000.0)
+        self.assertAlmostEqual(result["reactions"]["A"]["mx"], -3_000.0)
+        text = build_report_text(project_from_dict(raw), solve_with_backend(project_from_dict(raw), "frame3d"))
+        self.assertIn("三维线弹性空间梁柱矩阵位移法", text)
+        self.assertIn("Fz=10 kN", text)
+        self.assertIn("Mx=-3 kN·m", text)
+        self.assertIn("扭矩 T", text)
+        self.assertIn("三维组合应力/应变尚未提供", text)
+
 
 if __name__ == "__main__":
     unittest.main()

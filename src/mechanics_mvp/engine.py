@@ -10,6 +10,7 @@ from dataclasses import asdict
 
 from .diagnostics import diagnose_project
 from .models import AnalysisResult, Project
+from .preprocess import validate_size
 from .solver import Frame2DSolver, SolverError
 from .space3d import Frame3DSolver
 
@@ -34,6 +35,7 @@ SOLVER_BACKENDS = {
 
 
 def solve_with_backend(project: Project, backend: str = "frame2d") -> AnalysisResult:
+    validate_size(project, 3 if backend == "frame3d" else 2)
     diagnostics = None if backend == "frame3d" else diagnose_project(project)
     fatal_issues = [] if diagnostics is None else [issue for issue in diagnostics.issues if issue.level == "error"]
     if fatal_issues:

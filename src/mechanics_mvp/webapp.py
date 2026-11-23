@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import ipaddress
 import json
 import mimetypes
 import os
 import platform
+import struct
 import subprocess
+import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,8 +39,21 @@ from .report import build_report_pdf, build_text_report_pdf
 from .version import __version__
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-WEB_ROOT = PROJECT_ROOT / "web"
+def _resolve_roots() -> tuple[Path, Path]:
+    source_root = Path(__file__).resolve().parents[2]
+    local_web = source_root / "web"
+    if (local_web / "index.html").is_file():
+        return source_root, local_web
+    spec = importlib.util.find_spec("mechanics_mvp_web")
+    if spec is not None:
+        for location in spec.submodule_search_locations or ():
+            candidate = Path(location)
+            if (candidate / "index.html").is_file():
+                return Path.home() / ".mechanics-mvp", candidate
+    return source_root, local_web
+
+
+PROJECT_ROOT, WEB_ROOT = _resolve_roots()
 APPLICATION_ID = "computational-mechanics-solver"
 APPLICATION_VERSION = os.environ.get("MECHANICS_VERSION", __version__)
 STATIC_PROJECT_SCHEMA = "cms-static-project@1"
@@ -81,7 +97,7 @@ def _git_short_commit() -> str:
     return commit if completed.returncode == 0 and commit else "unknown"
 
 
-def _git_is_dirty() -> bool:
+def _git_is_dirty() -> bool | None:
     configured_dirty = os.environ.get("MECHANICS_GIT_DIRTY")
     if configured_dirty is not None:
         normalized = configured_dirty.strip().lower()
@@ -89,7 +105,7 @@ def _git_is_dirty() -> bool:
             return False
         if normalized in {"1", "true", "yes", "on"}:
             return True
-        return True
+        return None
     try:
         completed = subprocess.run(
             ["git", "status", "--porcelain", "--untracked-files=normal"],
@@ -100,11 +116,11 @@ def _git_is_dirty() -> bool:
             timeout=2,
         )
     except (OSError, subprocess.SubprocessError):
-        return True
-    return completed.returncode != 0 or bool(completed.stdout.strip())
+        return None
+    return bool(completed.stdout.strip()) if completed.returncode == 0 else None
 
 
-def runtime_version_payload() -> dict[str, str | bool]:
+def runtime_version_payload() -> dict[str, str | bool | None]:
     return {
         "application": APPLICATION_ID,
         "version": APPLICATION_VERSION,
@@ -119,7 +135,7 @@ def runtime_version_payload() -> dict[str, str | bool]:
 
 def solve_project_payload(raw: dict[str, Any]) -> dict[str, Any]:
     project = project_from_dict(raw)
-    result = solve_with_backend(project, _solver_backend(raw))
+    result = solve_with_backend(project, project.metadata.get("solver", "frame2d"))
     return {
         "displacements": result.displacements,
         "reactions": result.reactions,
@@ -131,7 +147,7 @@ def solve_project_payload(raw: dict[str, Any]) -> dict[str, Any]:
 
 def report_project_payload(raw: dict[str, Any]) -> bytes:
     project = project_from_dict(raw)
-    result = solve_with_backend(project, _solver_backend(raw))
+    result = solve_with_backend(project, project.metadata.get("solver", "frame2d"))
     images = raw.get("report_images", {})
     options = raw.get("report_options", [])
     if isinstance(options, str):
@@ -142,7 +158,10 @@ def report_project_payload(raw: dict[str, Any]) -> bytes:
 
 
 def dynamics_report_payload(raw: dict[str, Any]) -> bytes:
-    text = str(raw.get("report_text", "")).strip()
+    text = raw.get("report_text")
+    if not isinstance(text, str):
+        raise ValueError("Dynamics report text must be a string.")
+    text = text.strip()
     if not text:
         raise ValueError("Dynamics report text is empty.")
     if len(text) > 200_000:
@@ -150,13 +169,16 @@ def dynamics_report_payload(raw: dict[str, Any]) -> bytes:
     return build_text_report_pdf(text, images=raw.get("report_images", {}), title="动力学计算书")
 
 
-def _solver_backend(raw: dict[str, Any]) -> str:
-    metadata = raw.get("metadata", {})
-    return str(raw.get("solver") or metadata.get("solver") or "frame2d")
+def _text_field(payload: dict, key: str) -> str:
+    value = payload.get(key, "")
+    if not isinstance(value, str):
+        raise AuthValidationError(f"{key} 必须为字符串。")
+    return value
 
 
 class MechanicsWebHandler(BaseHTTPRequestHandler):
     server_version = f"MechanicsMVP/{APPLICATION_VERSION}"
+    solve_slots = threading.BoundedSemaphore(2)
 
     def do_GET(self) -> None:
         request_path = urlsplit(self.path).path
@@ -206,6 +228,15 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not found")
             return
 
+        if not self.solve_slots.acquire(blocking=False):
+            self._send_json({"error": "求解服务繁忙，请稍后重试。"}, status=503, headers={"Retry-After": "1"})
+            return
+        try:
+            self._handle_solver_post(request_path)
+        finally:
+            self.solve_slots.release()
+
+    def _handle_solver_post(self, request_path: str) -> None:
         try:
             raw_body = self._read_raw_body(SOLVER_BODY_LIMIT)
         except RequestBodyError as error:
@@ -263,24 +294,26 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
 
     def _handle_auth_mutation(self, method: str, request_path: str) -> None:
         try:
-            require_same_origin(self.headers)
+            peer = str(self.client_address[0]) if self.client_address else ""
+            trusted = getattr(self.server, "trusted_proxies", ())
+            scheme = _forwarded_scheme(self.headers, peer, trusted)
+            require_same_origin(self.headers, public_origin=getattr(self.server, "public_origin", None), scheme=scheme)
             service = self._auth_service()
             session_token = read_session_cookie(self.headers)
             csrf_token = str(self.headers.get("X-CSRF-Token", ""))
-            peer = str(self.client_address[0]) if self.client_address else "unknown"
-            remote_address = forwarded_client_address(self.headers, peer)
+            remote_address = forwarded_client_address(self.headers, peer, trusted)
 
             if method == "POST" and request_path == "/api/auth/register":
                 payload = self._read_json_body()
                 if payload.get("acceptedTerms") is not True or payload.get("acceptedPrivacy") is not True:
                     raise AuthValidationError("请先阅读并同意用户协议与隐私说明。")
-                password = str(payload.get("password", ""))
-                if password != str(payload.get("passwordConfirm", "")):
+                password = _text_field(payload, "password")
+                if password != _text_field(payload, "passwordConfirm"):
                     raise AuthValidationError("两次输入的密码不一致。")
                 issued = service.register(
-                    username=str(payload.get("username", "")),
+                    username=_text_field(payload, "username"),
                     password=password,
-                    display_name=str(payload.get("displayName", "")),
+                    display_name=_text_field(payload, "displayName"),
                     remote_address=remote_address,
                 )
                 self._send_issued_session(issued, status=201)
@@ -289,8 +322,8 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
             if method == "POST" and request_path == "/api/auth/login":
                 payload = self._read_json_body()
                 issued = service.login(
-                    username=str(payload.get("username", "")),
-                    password=str(payload.get("password", "")),
+                    username=_text_field(payload, "username"),
+                    password=_text_field(payload, "password"),
                     remote_address=remote_address,
                 )
                 self._send_issued_session(issued)
@@ -307,13 +340,13 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
 
             if method == "POST" and request_path == "/api/auth/password":
                 payload = self._read_json_body()
-                new_password = str(payload.get("newPassword", ""))
-                if new_password != str(payload.get("newPasswordConfirm", "")):
+                new_password = _text_field(payload, "newPassword")
+                if new_password != _text_field(payload, "newPasswordConfirm"):
                     raise AuthValidationError("两次输入的新密码不一致。")
                 issued = service.change_password(
                     session_token,
                     csrf_token,
-                    current_password=str(payload.get("currentPassword", "")),
+                    current_password=_text_field(payload, "currentPassword"),
                     new_password=new_password,
                 )
                 self._send_issued_session(issued)
@@ -331,7 +364,7 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
                 user = service.update_profile(
                     session_token,
                     csrf_token,
-                    display_name=str(payload.get("displayName", "")),
+                    display_name=_text_field(payload, "displayName"),
                 )
                 self._send_json({"user": public_user_payload(user)})
                 return
@@ -524,7 +557,46 @@ class MechanicsWebHandler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def forwarded_client_address(headers: Any, peer: str) -> str:
+def _proxy_networks(config: str) -> tuple:
+    networks = []
+    for item in filter(None, (value.strip() for value in config.split(","))):
+        if item == "docker-gateway":
+            # On the bundled Linux bridge the host nginx is the default gateway.
+            route_table = Path("/proc/net/route")
+            if not route_table.is_file():
+                raise RuntimeError("CMS_TRUSTED_PROXIES=docker-gateway requires Linux /proc/net/route.")
+            routes = route_table.read_text(encoding="ascii").splitlines()[1:]
+            for row in routes:
+                parts = row.split()
+                if len(parts) < 4:
+                    continue
+                if parts[1] == "00000000" and int(parts[3], 16) & 2:
+                    gateway_ip = ipaddress.IPv4Address(struct.pack("=I", int(parts[2], 16)))
+                    networks.append(ipaddress.ip_network(gateway_ip))
+        else:
+            networks.append(ipaddress.ip_network(item, strict=False))
+    return tuple(networks)
+
+
+def _trusted_peer(peer: str, networks: tuple) -> bool:
+    address = _header_ip(peer)
+    if not address:
+        return False
+    parsed = ipaddress.ip_address(address)
+    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
+        parsed = parsed.ipv4_mapped
+    return any(parsed in net for net in networks)
+
+
+def _forwarded_scheme(headers: Any, peer: str, networks: tuple) -> str:
+    if not _trusted_peer(peer, networks) or headers is None:
+        return "http"
+    raw = str(headers.get("X-Forwarded-Proto") or "")
+    candidate = raw.split(",")[-1].strip().lower()
+    return candidate if candidate in {"http", "https"} else "http"
+
+
+def forwarded_client_address(headers: Any, peer: str, networks: tuple = ()) -> str:
     """Client address for the login and registration buckets.
 
     nginx replaces X-Real-IP with the address it accepted and appends that
@@ -533,6 +605,8 @@ def forwarded_client_address(headers: Any, peer: str) -> str:
     the TCP peer is used.
     """
 
+    if not _trusted_peer(peer, networks):
+        return peer or "unknown"
     real_ip = _header_ip(headers.get("X-Real-IP") if headers is not None else None)
     if real_ip:
         return real_ip
@@ -569,6 +643,8 @@ def main(argv: list[str] | None = None) -> int:
 
     auth_service, auth_cookie_secure = create_auth_service(PROJECT_ROOT)
     server = ThreadingHTTPServer((args.host, args.port), MechanicsWebHandler)
+    server.trusted_proxies = _proxy_networks(os.environ.get("CMS_TRUSTED_PROXIES", ""))
+    server.public_origin = os.environ.get("CMS_PUBLIC_ORIGIN", "").strip() or None
     server.auth_service = auth_service
     server.auth_cookie_secure = auth_cookie_secure
     print(f"Mechanics MVP web app: http://{args.host}:{args.port}")

@@ -40,6 +40,9 @@ def create_auth_service(project_root: Path) -> tuple[AuthService, bool]:
     environment = os.environ.get("CMS_ENV", "development").strip().lower()
     data_root = _configured_data_root(project_root)
     database_url = os.environ.get("CMS_DATABASE_URL", "").strip()
+    if not database_url and os.environ.get("PGHOST"):
+        # libpq reads PGHOST, PGDATABASE, PGUSER and PGPASSWORD separately.
+        database_url = "postgresql://"
     if not database_url:
         database_url = f"sqlite:///{(data_root / 'mechanics.db').as_posix()}"
 
@@ -68,26 +71,27 @@ def create_auth_service(project_root: Path) -> tuple[AuthService, bool]:
     return service, secure_cookie
 
 
-def require_same_origin(headers: Any) -> None:
-    origin_value = str(headers.get("Origin", "")).strip()
-    host_value = str(headers.get("Host", "")).strip()
+def require_same_origin(headers: Any, *, public_origin: str | None = None, scheme: str = "http") -> None:
+    def origin_tuple(value: str, *, allow_trailing_slash: bool = False) -> tuple[str, str, int]:
+        parsed = urlsplit(value.strip())
+        valid_paths = {"", "/"} if allow_trailing_slash else {""}
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None
+                or parsed.path not in valid_paths or parsed.query or parsed.fragment):
+            raise ValueError("Invalid origin")
+        port = parsed.port if parsed.port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname.lower(), port
+
+    configured_origin = (public_origin or "").strip()
+    expected = configured_origin or f"{scheme}://{headers.get('Host', '')}"
     try:
-        origin = urlsplit(origin_value)
+        if origin_tuple(str(headers.get("Origin", ""))) == origin_tuple(
+            expected, allow_trailing_slash=bool(configured_origin)
+        ):
+            return
     except ValueError:
-        origin = None
-    if (
-        origin is None
-        or origin.scheme not in {"http", "https"}
-        or not origin.netloc
-        or origin.username is not None
-        or origin.password is not None
-        or origin.path not in {"", "/"}
-        or origin.query
-        or origin.fragment
-        or not host_value
-        or origin.netloc.casefold() != host_value.casefold()
-    ):
-        raise AuthOriginError("请求来源无效，请刷新页面后重试。")
+        pass
+    raise AuthOriginError("请求来源无效，请刷新页面后重试。")
 
 
 def read_session_cookie(headers: Any) -> str:
@@ -213,23 +217,29 @@ def _configured_data_root(project_root: Path) -> Path:
 
 
 def _load_or_create_development_secret(path: Path) -> bytes:
-    if path.is_file():
-        value = path.read_text(encoding="ascii").strip()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.{secrets.token_hex(8)}.tmp")
+    if not path.exists():
         try:
-            secret = bytes.fromhex(value)
-        except ValueError:
-            secret = b""
-        if len(secret) >= 32:
-            return secret
-
-    secret = secrets.token_bytes(48)
-    temporary = path.with_name(f"{path.name}.{secrets.token_hex(6)}.tmp")
-    temporary.write_text(secret.hex(), encoding="ascii")
-    try:
-        os.chmod(temporary, 0o600)
-    except OSError:
-        pass
-    temporary.replace(path)
+            with os.fdopen(os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600), "w") as stream:
+                stream.write(secrets.token_hex(48))
+                stream.flush()
+                os.fsync(stream.fileno())
+            try:
+                if os.name == "nt":
+                    os.rename(temporary, path)  # Windows rename never overwrites an existing destination.
+                else:
+                    os.link(temporary, path)
+            except FileExistsError:
+                pass  # A competing process published its complete secret first.
+            except OSError:
+                if not path.exists():
+                    raise
+        finally:
+            temporary.unlink(missing_ok=True)
+    secret = bytes.fromhex(path.read_text(encoding="ascii").strip())
+    if len(secret) < 32:
+        raise ValueError("Invalid persisted development secret.")
     return secret
 
 

@@ -23,7 +23,7 @@ services:
       context: .
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-        GIT_DIRTY: "false"
+        GIT_DIRTY: ${GIT_DIRTY:-unknown}
     restart: unless-stopped
     depends_on:
       db:
@@ -31,7 +31,12 @@ services:
     environment:
       CMS_ENV: production
       CMS_AUTH_SECRET: ${CMS_AUTH_SECRET:?set a random 64-hex secret in .env}
-      CMS_DATABASE_URL: postgresql://cms:${POSTGRES_PASSWORD}@db:5432/cms
+      PGHOST: db
+      PGDATABASE: cms
+      PGUSER: cms
+      PGPASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      CMS_PUBLIC_ORIGIN: ${CMS_PUBLIC_ORIGIN:-https://cms.leomath.cn}
+      CMS_TRUSTED_PROXIES: ${CMS_TRUSTED_PROXIES:-docker-gateway}
       CMS_DATA_DIR: /var/lib/cms
       CMS_COOKIE_SECURE: "true"
     volumes:

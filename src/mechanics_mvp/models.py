@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import sqrt
 from typing import Any
 
 
@@ -40,6 +41,17 @@ class Section:
     inertia_y: float | None = None
     inertia_z: float | None = None
     torsion_constant: float | None = None
+
+    @property
+    def plane_bending_modulus(self) -> float:
+        if self.section_modulus is not None:
+            return self.section_modulus
+        return self.inertia / (sqrt(self.area) / 2)
+
+    def extreme_normal_stress(self, axial: float, moment: float) -> float:
+        mean = axial / self.area
+        bending = moment / self.plane_bending_modulus
+        return max((mean + bending, mean - bending), key=abs)
 
 
 @dataclass(frozen=True)

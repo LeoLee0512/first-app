@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
+from threading import RLock
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -21,6 +23,9 @@ class Database:
         self.url = str(url).strip()
         self.migrations_dir = (migrations_dir or DEFAULT_MIGRATIONS).resolve()
         self.kind, self.location = self._parse_url(self.url)
+        self._memory_lock = RLock()
+        self._closed = False
+        self._memory = self._connect() if self.location == ":memory:" else None
 
     @staticmethod
     def _parse_url(url: str) -> tuple[str, str]:
@@ -35,17 +40,22 @@ class Database:
             return "postgresql", url
         raise DatabaseConfigurationError("DATABASE_URL must use sqlite:/// or postgresql://.")
 
+    def close(self) -> None:
+        if self._memory is not None:
+            with self._memory_lock:
+                if not self._closed:
+                    self._memory.close()
+                    self._closed = True
+
     def _connect(self):
         if self.kind == "sqlite":
             path = Path(self.location)
             if self.location != ":memory:":
                 path.parent.mkdir(parents=True, exist_ok=True)
-            connection = sqlite3.connect(path, timeout=5.0)
+            connection = sqlite3.connect(path, timeout=5.0, check_same_thread=self.location != ":memory:")
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA busy_timeout = 5000")
-            if self.location != ":memory:":
-                connection.execute("PRAGMA journal_mode = WAL")
             return connection
 
         try:
@@ -71,7 +81,12 @@ class Database:
         concurrent threads instead of racing.
         """
 
-        connection = self._connect()
+        if self._memory is not None:
+            self._memory_lock.acquire()
+            if self._closed:
+                self._memory_lock.release()
+                raise DatabaseConfigurationError("Database is closed.")
+        connection = self._memory if self._memory is not None else self._connect()
         try:
             if immediate and self.kind == "sqlite":
                 connection.execute("BEGIN IMMEDIATE")
@@ -83,7 +98,10 @@ class Database:
             connection.rollback()
             raise
         finally:
-            connection.close()
+            if self._memory is None:
+                connection.close()
+            else:
+                self._memory_lock.release()
 
     def execute_on(
         self,
@@ -145,6 +163,13 @@ class Database:
             )
 
         with self.transaction() as connection:
+            if self.kind == "sqlite":
+                if self.location != ":memory:":
+                    _enable_wal(connection)
+                connection.execute("BEGIN IMMEDIATE")
+            else:
+                # Serialize even the first startup, before any schema tables exist.
+                connection.execute("SELECT pg_advisory_xact_lock(731405016)")
             self.execute_on(
                 connection,
                 """
@@ -162,15 +187,22 @@ class Database:
                 )
             }
 
-        for migration in sorted(self.migrations_dir.glob("[0-9][0-9][0-9][0-9]_*.sql")):
-            if migration.name in applied:
-                continue
-            statements = [
-                statement.strip()
-                for statement in migration.read_text(encoding="utf-8").split(";")
-                if statement.strip()
-            ]
-            with self.transaction() as connection:
+            for migration in sorted(self.migrations_dir.glob("[0-9][0-9][0-9][0-9]_*.sql")):
+                if migration.name in applied:
+                    continue
+                script = migration.read_text(encoding="utf-8")
+                statements = _migration_statements(script)
+                if self.kind == "sqlite" and migration.name == "0002_entitlements.sql":
+                    # Older releases committed initial ALTERs before recording the migration.
+                    columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(subscription_plans)")}
+                    for statement in tuple(statements):
+                        match = re.fullmatch(r"ALTER TABLE subscription_plans ADD COLUMN (\w+) (TEXT|INTEGER) NOT NULL DEFAULT (.+);", statement)
+                        if match and match[1] in columns:
+                            col = columns[match[1]]
+                            default = match[3].split(" CHECK", 1)[0]
+                            if col["type"].upper() != match[2] or not col["notnull"] or col["dflt_value"] != default:
+                                raise DatabaseConfigurationError(f"Incompatible existing column: {match[1]}")
+                            statements.remove(statement)
                 for statement in statements:
                     self.execute_on(connection, statement)
                 self.execute_on(
@@ -178,6 +210,39 @@ class Database:
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                     (migration.name, _utc_timestamp()),
                 )
+
+
+def _enable_wal(connection: sqlite3.Connection) -> None:
+    # Changing journal mode requires an exclusive lock. SQLite may return
+    # BUSY immediately when multiple processes open a new database together.
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            mode = connection.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+            if mode.lower() != "wal":
+                raise DatabaseConfigurationError(f"Could not enable SQLite WAL (mode: {mode}).")
+            return
+        except sqlite3.OperationalError as exc:
+            # sqlite_errorcode is available from Python 3.11 onwards.
+            code = getattr(exc, "sqlite_errorcode", None)
+            busy = (code & 0xff) == 5 if code is not None else str(exc) == "database is locked"
+            if not busy or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.025)
+
+
+def _migration_statements(script: str) -> list[str]:
+    statements = []
+    pending = ""
+    for fragment in script.split(";")[:-1]:
+        pending += fragment + ";"
+        if sqlite3.complete_statement(pending):
+            statements.append(pending.strip())
+            pending = ""
+    tail = pending + script.rsplit(";", 1)[-1]
+    if any(line.strip() and not line.lstrip().startswith("--") for line in tail.splitlines()):
+        statements.append(tail.strip())
+    return statements
 
 
 def _utc_timestamp() -> str:

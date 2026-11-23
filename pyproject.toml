@@ -20,11 +20,13 @@ mechanics-web = "mechanics_mvp.webapp:main"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[tool.setuptools]
+packages = ["mechanics_mvp", "mechanics_mvp_web"]
+package-dir = {"" = "src", mechanics_mvp_web = "web"}
 
 [tool.setuptools.package-data]
 mechanics_mvp = ["migrations/*.sql"]
+mechanics_mvp_web = ["*.html", "*.js", "*.css", "*.png", "*.jpg", "downloads/*.pdf"]
 
 [tool.setuptools.dynamic]
 version = {attr = "mechanics_mvp.version.__version__"}

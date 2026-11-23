@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -25,11 +26,17 @@ from .units import to_si
 _RESTRAINT_NAME_SPLIT = re.compile(r"[,\s，、]+")
 
 
-def load_project(path: str | Path) -> Project:
+def load_project(path: str | Path, backend: str | None = None) -> Project:
     with Path(path).open("r", encoding="utf-8") as file:
         raw = json.load(file)
     project = project_from_dict(raw)
-    validate_project(project)
+    effective_backend = backend or project.metadata.get("solver", "frame2d")
+    if effective_backend == "frame3d":
+        from .space3d import _validate_spatial_project
+
+        _validate_spatial_project(project)
+    else:
+        validate_project(project)
     return project
 
 
@@ -44,7 +51,13 @@ def project_from_dict(raw: dict[str, Any]) -> Project:
     nodal_loads = tuple(_parse_nodal_load(item) for item in _optional_list(raw_loads, "nodes"))
     element_loads = tuple(_parse_element_load(item) for item in _optional_list(raw_loads, "elements"))
 
-    metadata = {str(key): str(value) for key, value in _optional_mapping(raw, "metadata").items()}
+    raw_metadata = _optional_mapping(raw, "metadata")
+    metadata = {str(key): str(value) for key, value in raw_metadata.items() if value is not None}
+    selected_solver = raw.get("solver") or raw_metadata.get("solver")
+    if selected_solver:
+        metadata["solver"] = str(selected_solver)
+    else:
+        metadata.pop("solver", None)
     return Project(
         nodes=nodes,
         materials=materials,
@@ -58,20 +71,60 @@ def project_from_dict(raw: dict[str, Any]) -> Project:
 
 
 def _parse_coupling(raw: dict[str, Any]) -> NodeCoupling:
+    if raw.get("dofs") is None:
+        dofs: tuple[str, ...] = ("ux", "uy")
+    else:
+        dofs = tuple(_optional_list(raw, "dofs"))
     return NodeCoupling(
         node_i=str(raw["node_i"]),
         node_j=str(raw["node_j"]),
-        dofs=tuple(str(dof) for dof in _optional_list(raw, "dofs") or ("ux", "uy")),
+        dofs=dofs,
     )
 
 
+def _parse_angle_degrees(value: Any, label: str) -> float:
+    if isinstance(value, bool):
+        raise ValidationError(f"{label} must be a number in degrees, not a boolean.")
+    if isinstance(value, (int, float)):
+        angle = float(value)
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            angle = float(text)
+        except ValueError:
+            try:
+                angle = math.degrees(to_si(text, default_unit="deg"))
+            except Exception as exc:
+                raise ValidationError(f"Invalid {label}: {value!r}.") from exc
+    else:
+        raise ValidationError(f"Invalid {label}: {value!r}.")
+    if not math.isfinite(angle):
+        raise ValidationError(f"Non-finite {label}: {value!r}.")
+    return angle
+
+
 def _parse_node(raw: dict[str, Any]) -> Node:
+    support = _optional_mapping(raw, "support")
+    raw_angle = raw.get("support_angle")
+    support_angle_val = support.get("angle")
+    node_id = str(raw["id"])
+    if raw_angle is not None and support_angle_val is not None:
+        angle = _parse_angle_degrees(raw_angle, f"support_angle at node {node_id}")
+        nested = _parse_angle_degrees(support_angle_val, f"support.angle at node {node_id}")
+        if not math.isclose(math.remainder(angle - nested, 360.0), 0.0, abs_tol=1e-9):
+            raise ValidationError(f"Conflicting support angles at node {node_id}.")
+    elif raw_angle is not None:
+        angle = _parse_angle_degrees(raw_angle, f"support_angle at node {node_id}")
+    elif support_angle_val is not None:
+        angle = _parse_angle_degrees(support_angle_val, f"support.angle at node {node_id}")
+    else:
+        angle = 0.0
     return Node(
-        id=str(raw["id"]),
+        id=node_id,
         x=to_si(raw["x"], default_unit="m"),
         y=to_si(raw.get("y", 0.0), default_unit="m"),
         restraints=_parse_restraints(raw.get("restraints", ())),
-        support_angle=float(raw.get("support_angle", 0.0) or 0.0),
+        support_angle=angle,
         z=to_si(raw.get("z", 0.0), default_unit="m"),
         restraints_3d=_parse_restraints_3d(raw.get("restraints_3d", raw.get("restraints", ()))),
     )
@@ -87,10 +140,11 @@ def _parse_material(raw: dict[str, Any]) -> Material:
 
 def _parse_section(raw: dict[str, Any]) -> Section:
     section_modulus = raw.get("W")
+    raw_inertia = raw.get("I")
     return Section(
         id=str(raw["id"]),
         area=to_si(raw["A"], default_unit="m^2"),
-        inertia=to_si(raw["I"], default_unit="m^4"),
+        inertia=0.0 if raw_inertia is None else to_si(raw_inertia, default_unit="m^4"),
         section_modulus=None if section_modulus is None else to_si(section_modulus, default_unit="m^3"),
         inertia_y=_optional_si(raw, "Iy", "m^4"),
         inertia_z=_optional_si(raw, "Iz", "m^4"),
@@ -99,6 +153,13 @@ def _parse_section(raw: dict[str, Any]) -> Section:
 
 
 def _parse_element(raw: dict[str, Any]) -> Element:
+    geometry = raw.get("geometry")
+    if geometry is not None and (not isinstance(geometry, str) or geometry not in {"straight", "tee"}):
+        raise ValidationError(
+            f"Element {raw['id']} geometry {geometry!r} must be discretised into straight members."
+        )
+    release_i = raw.get("moment_release_i")
+    release_j = raw.get("moment_release_j")
     return Element(
         id=str(raw["id"]),
         node_i=str(raw["node_i"]),
@@ -106,8 +167,8 @@ def _parse_element(raw: dict[str, Any]) -> Element:
         material=str(raw["material"]),
         section=str(raw["section"]),
         type=str(raw.get("type", "frame")),
-        moment_release_i=bool(raw.get("moment_release_i", False)),
-        moment_release_j=bool(raw.get("moment_release_j", False)),
+        moment_release_i=False if release_i is None else _boolean(release_i),
+        moment_release_j=False if release_j is None else _boolean(release_j),
     )
 
 
@@ -148,6 +209,16 @@ def _parse_element_load(raw: dict[str, Any]) -> ElementLoad:
     )
 
 
+def _boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "false"}:
+            return normalized == "true"
+    raise ValidationError(f"Expected a boolean, received {value!r}.")
+
+
 def _parse_restraints(raw: Any) -> tuple[bool, bool, bool]:
     # Spatial names (uz/rx/ry) are accepted vocabulary — they also feed the
     # 3D parser — but only ux/uy/rz mean anything to the 2D solver.
@@ -184,7 +255,7 @@ def _restraint_names(raw: Any, allowed: tuple[str, ...]) -> set[str]:
             f"未知约束自由度：{', '.join(sorted(unknown))}；可用值：{', '.join(allowed)}。"
         )
     if isinstance(raw, dict):
-        return {str(key) for key, value in raw.items() if value}
+        return {str(key) for key, value in raw.items() if _boolean(value)}
     return names
 
 
@@ -207,9 +278,10 @@ def _optional_mapping(raw: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _optional_si(raw: dict[str, Any], key: str, default_unit: str) -> float | None:
-    if key not in raw:
+    value = raw.get(key)
+    if value is None:
         return None
-    return to_si(raw[key], default_unit=default_unit)
+    return to_si(value, default_unit=default_unit)
 
 
 def _parse_coefficients(raw: Any, default_unit: str) -> tuple[float, ...]:

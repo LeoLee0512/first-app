@@ -1,0 +1,77 @@
+{
+  "metadata": {
+    "name": "spatial_bent_frame_3_28",
+    "solver": "frame3d"
+  },
+  "materials": [
+    {
+      "id": "steel",
+      "E": "200 GPa",
+      "nu": 0.3
+    }
+  ],
+  "sections": [
+    {
+      "id": "symmetric",
+      "A": "10000 mm^2",
+      "I": "80000000 mm^4",
+      "Iy": "80000000 mm^4",
+      "Iz": "80000000 mm^4",
+      "J": "160000000 mm^4"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "A",
+      "x": "0 m",
+      "y": "0 m",
+      "z": "0 m",
+      "restraints": ["ux", "uy", "uz", "rx", "ry", "rz"]
+    },
+    {
+      "id": "B",
+      "x": "3 m",
+      "y": "0 m",
+      "z": "0 m"
+    },
+    {
+      "id": "C",
+      "x": "3 m",
+      "y": "2 m",
+      "z": "0 m"
+    }
+  ],
+  "elements": [
+    {
+      "id": "AB",
+      "node_i": "A",
+      "node_j": "B",
+      "material": "steel",
+      "section": "symmetric",
+      "type": "frame"
+    },
+    {
+      "id": "BC",
+      "node_i": "B",
+      "node_j": "C",
+      "material": "steel",
+      "section": "symmetric",
+      "type": "frame"
+    }
+  ],
+  "loads": {
+    "nodes": [
+      {
+        "node": "C",
+        "mx": "5333.333333333333 N*m"
+      }
+    ],
+    "elements": [
+      {
+        "element": "AB",
+        "kind": "uniform_global",
+        "fz": "-4 kN/m"
+      }
+    ]
+  }
+}
