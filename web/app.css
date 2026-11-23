@@ -747,11 +747,11 @@ input[type="number"],
 
 .topbar {
   height: 44px;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 12px;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 14px;
   background: var(--surface-elevated);
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(8px);
@@ -760,8 +760,9 @@ input[type="number"],
 .topbar-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 14px;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .brand {
@@ -823,14 +824,14 @@ input[type="number"],
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-width: 0;
+  gap: 10px;
+  flex: 0 0 auto;
 }
 
 .action-group {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .topbar-divider,
@@ -842,15 +843,17 @@ input[type="number"],
 }
 
 .solve-cta {
-  padding: 0 14px;
+  padding: 0 16px;
+  flex-shrink: 0;
 }
 
 .user-settings {
   display: flex;
   align-items: center;
-  justify-self: end;
-  gap: 6px;
+  justify-content: flex-end;
+  gap: 8px;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .manual-download-card {
@@ -1947,9 +1950,15 @@ body.freeform-drawing #canvas,
    Responsive Breakpoints
    ========================================================================== */
 
-@media (max-width: 1180px) {
+@media (max-width: 1460px) {
+  .manual-download-card small {
+    display: none;
+  }
+}
+
+@media (max-width: 1240px) {
   .brand-title {
-    max-width: 140px;
+    max-width: 150px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -1958,8 +1967,26 @@ body.freeform-drawing #canvas,
     display: none;
   }
 
+  .manual-download-card small {
+    display: inline;
+  }
+
   .workbench {
     grid-template-columns: 48px minmax(0, 1fr) 286px;
+  }
+}
+
+@media (max-width: 1060px) {
+  .main-user-name {
+    display: none;
+  }
+
+  .action-strip {
+    gap: 6px;
+  }
+
+  .action-group {
+    gap: 4px;
   }
 }
 
@@ -1978,7 +2005,7 @@ body.freeform-drawing #canvas,
 
   .topbar {
     height: auto;
-    grid-template-columns: 1fr;
+    flex-wrap: wrap;
     padding: 8px 12px;
     gap: 8px;
   }
