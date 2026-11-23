@@ -26,7 +26,7 @@ class ManualDownloadTests(unittest.TestCase):
         cls.thread.join(timeout=2)
 
     def test_fixed_manual_endpoint_returns_exact_pdf_as_attachment(self):
-        url = f"{self.base_url}/downloads/computational-mechanics-solver-v1.3.2-manual.pdf?source=test"
+        url = f"{self.base_url}/downloads/computational-mechanics-solver-v1.5.1-manual.pdf?source=test"
         with urlopen(url, timeout=10) as response:
             body = response.read()
 
@@ -34,7 +34,7 @@ class ManualDownloadTests(unittest.TestCase):
         self.assertEqual(response.headers.get_content_type(), "application/pdf")
         self.assertEqual(
             response.headers["Content-Disposition"],
-            'attachment; filename="computational-mechanics-solver-v1.3.2-manual.pdf"',
+            'attachment; filename="computational-mechanics-solver-v1.5.1-manual.pdf"',
         )
         self.assertTrue(body.startswith(b"%PDF-"))
         self.assertEqual(len(body), MANUAL_FILE.stat().st_size)

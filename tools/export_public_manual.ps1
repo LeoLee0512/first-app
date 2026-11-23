@@ -7,15 +7,15 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 if (-not $InputDocx) {
-    $manualDirectory = Join-Path $root "docs\manual\v1.3.2"
-    $matches = @(Get-ChildItem -LiteralPath $manualDirectory -File -Filter "Computational-Mechanics-Solver-v1.3.2-*.docx")
+    $manualDirectory = Join-Path $root "docs\manual\v1.5.1"
+    $matches = @(Get-ChildItem -LiteralPath $manualDirectory -File -Filter "Computational-Mechanics-Solver-v1.5.1-*.docx")
     if ($matches.Count -ne 1) {
-        throw "Expected one generated v1.3.2 manual DOCX, found $($matches.Count)."
+        throw "Expected one generated v1.5.1 manual DOCX, found $($matches.Count)."
     }
     $InputDocx = $matches[0].FullName
 }
 if (-not $OutputPdf) {
-    $OutputPdf = Join-Path $root "web\downloads\computational-mechanics-solver-v1.3.2-manual.pdf"
+    $OutputPdf = Join-Path $root "web\downloads\computational-mechanics-solver-v1.5.1-manual.pdf"
 }
 
 $inputPath = [System.IO.Path]::GetFullPath($InputDocx)

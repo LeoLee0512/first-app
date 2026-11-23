@@ -1,4 +1,4 @@
-"""Build the public v1.3.2 DOCX manual from a reviewable Markdown source.
+"""Build the public v1.5.1 DOCX manual from a reviewable Markdown source.
 
 The generated DOCX intentionally leaves TOC, cross-reference, caption-number,
 page-number, and equation build-up work to Microsoft Word. Run
@@ -26,16 +26,15 @@ from docx.shared import Mm, Pt, RGBColor
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE = ROOT / "docs" / "manual" / "v1.3.2" / "manual-source.md"
+DEFAULT_SOURCE = ROOT / "docs" / "manual" / "v1.5.1" / "manual-source.md"
 DEFAULT_DOCX = (
     ROOT
     / "docs"
     / "manual"
-    / "v1.3.2"
-    / "Computational-Mechanics-Solver-v1.3.2-用户与技术说明书.docx"
+    / "v1.5.1"
+    / "Computational-Mechanics-Solver-v1.5.1-用户与技术说明书.docx"
 )
-BACKGROUND = ROOT / "web" / "welcome-bg.jpg"
-COVER_IMAGE = ROOT / "docs" / "manual" / "v1.3.2" / "assets" / "cover-v1.3.2.png"
+COVER_IMAGE = ROOT / "docs" / "manual" / "v1.5.1" / "assets" / "cover-v1.5.1.png"
 
 COVER_WIDTH_PX = 2480
 COVER_HEIGHT_PX = 3508
@@ -596,65 +595,76 @@ def _draw_centered_segments(
         x += width
 
 
-def _build_cover_image(background_path: Path, output_path: Path) -> None:
+def _build_cover_image(output_path: Path) -> None:
     if not SIMHEI_FONT.is_file() or not TIMES_BOLD_FONT.is_file():
         missing = [str(path) for path in (SIMHEI_FONT, TIMES_BOLD_FONT) if not path.is_file()]
         raise FileNotFoundError(f"Cover fonts not found: {', '.join(missing)}")
 
-    with Image.open(background_path) as source:
-        background = ImageOps.fit(
-            source.convert("RGB"),
-            (COVER_WIDTH_PX, COVER_HEIGHT_PX),
-            method=Image.Resampling.LANCZOS,
-            centering=(0.5, 0.5),
-        ).convert("RGBA")
-
-    background = Image.alpha_composite(
-        background,
-        Image.new("RGBA", background.size, (0, 0, 0, 72)),
-    )
+    # Minimalist Ink Obsidian & Coral Red architectural grid cover
+    background = Image.new("RGBA", (COVER_WIDTH_PX, COVER_HEIGHT_PX), (14, 14, 16, 255))
     draw = ImageDraw.Draw(background)
-    title_font = ImageFont.truetype(str(TIMES_BOLD_FONT), 92)
-    subtitle_latin = ImageFont.truetype(str(TIMES_BOLD_FONT), 92)
-    subtitle_cn = ImageFont.truetype(str(SIMHEI_FONT), 92)
+
+    minor_step = 70
+    major_step = 350
+    minor_color = (28, 28, 34, 255)
+    major_color = (44, 44, 54, 255)
+    for x in range(0, COVER_WIDTH_PX, minor_step):
+        draw.line([(x, 0), (x, COVER_HEIGHT_PX)], fill=major_color if x % major_step == 0 else minor_color, width=2)
+    for y in range(0, COVER_HEIGHT_PX, minor_step):
+        draw.line([(0, y), (COVER_WIDTH_PX, y)], fill=major_color if y % major_step == 0 else minor_color, width=2)
+
+    # Subtle structural truss schematic emblem above the title
+    coral = (232, 122, 116, 255)
+    coral_soft = (232, 122, 116, 95)
+    cx, cy = COVER_WIDTH_PX // 2, 920
+    draw.polygon([(cx - 170, cy + 120), (cx, cy - 120), (cx + 170, cy + 120)], outline=coral, width=7)
+    draw.line([(cx, cy - 120), (cx, cy + 120)], fill=coral, width=5)
+    for px, py in ((cx - 170, cy + 120), (cx, cy - 120), (cx + 170, cy + 120), (cx, cy + 120)):
+        draw.ellipse((px - 14, py - 14, px + 14, py + 14), fill=(14, 14, 16, 255), outline=coral, width=6)
+
+    # Clean horizontal architectural accent rule
+    draw.line([(440, 1640), (COVER_WIDTH_PX - 440, 1640)], fill=coral_soft, width=3)
+
+    title_font = ImageFont.truetype(str(TIMES_BOLD_FONT), 96)
+    subtitle_latin = ImageFont.truetype(str(TIMES_BOLD_FONT), 88)
+    subtitle_cn = ImageFont.truetype(str(SIMHEI_FONT), 88)
     studio_font = ImageFont.truetype(str(TIMES_BOLD_FONT), 58)
     studio_plus_font = ImageFont.truetype(str(TIMES_BOLD_FONT), 34)
     date_latin = ImageFont.truetype(str(TIMES_BOLD_FONT), 50)
     date_cn = ImageFont.truetype(str(SIMHEI_FONT), 50)
 
-    white = (245, 249, 252, 255)
-    soft_white = (220, 231, 237, 255)
-    cyan = (105, 213, 226, 255)
+    white = (236, 236, 239, 255)
+    soft_white = (161, 161, 170, 255)
 
     _draw_centered_segments(
         draw,
-        y=1270,
+        y=1240,
         segments=[("Computational Mechanics Solver", title_font, white, 0)],
     )
     _draw_centered_segments(
         draw,
-        y=1465,
+        y=1430,
         segments=[
-            ("v1.3.2 ", subtitle_latin, cyan, 0),
-            ("用户与技术说明书", subtitle_cn, cyan, 0),
+            ("v1.5.1 ", subtitle_latin, coral, 0),
+            ("用户与技术说明书", subtitle_cn, coral, 0),
         ],
     )
     _draw_centered_segments(
         draw,
-        y=1890,
+        y=1860,
         segments=[
             ("Leo Li", studio_font, white, 0),
-            ("+", studio_plus_font, white, -21),
+            ("+", studio_plus_font, coral, -21),
             (" Studio", studio_font, white, 0),
         ],
     )
     _draw_centered_segments(
         draw,
-        y=2025,
+        y=1995,
         segments=[
             ("2026 ", date_latin, soft_white, 0),
             ("年", date_cn, soft_white, 0),
-            (" 7 ", date_latin, soft_white, 0),
+            (" 11 ", date_latin, soft_white, 0),
             ("月", date_cn, soft_white, 0),
         ],
     )
@@ -701,7 +711,7 @@ def _configure_sections(document: Document) -> None:
 
 
 def _add_cover(document: Document) -> None:
-    _build_cover_image(BACKGROUND, COVER_IMAGE)
+    _build_cover_image(COVER_IMAGE)
     background = document.add_paragraph()
     _add_cover_background(background, COVER_IMAGE)
 
@@ -721,7 +731,7 @@ def _add_cover(document: Document) -> None:
     header = body.header.paragraphs[0]
     header.alignment = WD_ALIGN_PARAGRAPH.CENTER
     header.paragraph_format.space_after = Pt(0)
-    run = header.add_run("Computational Mechanics Solver v1.3.2")
+    run = header.add_run("Computational Mechanics Solver v1.5.1")
     _set_run_font(run, size=9, cn=CN_BODY, latin=LATIN_BODY, color=MUTED)
     p_pr = header._p.get_or_add_pPr()
     border = OxmlElement("w:pBdr")
@@ -1021,10 +1031,10 @@ def _build_body(
 
 def _set_document_properties(document: Document) -> None:
     properties = document.core_properties
-    properties.title = "Computational Mechanics Solver v1.3.2 用户与技术说明书"
+    properties.title = "Computational Mechanics Solver v1.5.1 用户与技术说明书"
     properties.subject = "二维静力学与动力学软件用户手册"
     properties.author = "Leo Li+ Studio"
-    properties.keywords = "Computational Mechanics Solver, 静力学, 动力学, 用户手册"
+    properties.keywords = "Computational Mechanics Solver, v1.5.1, 静力学, 动力学, 用户手册"
     properties.comments = "Public user and technical manual"
 
     settings = document.settings._element
@@ -1042,8 +1052,6 @@ def _set_document_properties(document: Document) -> None:
 def build_manual(source: Path, output: Path) -> Path:
     if not source.is_file():
         raise FileNotFoundError(source)
-    if not BACKGROUND.is_file():
-        raise FileNotFoundError(BACKGROUND)
     document = Document()
     _set_document_properties(document)
     _configure_styles(document)

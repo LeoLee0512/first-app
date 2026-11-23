@@ -63,7 +63,7 @@ STARTED_AT = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+
 # Report requests carry two JPEG canvas snapshots as data URLs, which stay far
 # below this; anything larger is rejected before the body is read.
 SOLVER_BODY_LIMIT = 16 * 1024 * 1024
-MANUAL_FILENAME = "computational-mechanics-solver-v1.3.2-manual.pdf"
+MANUAL_FILENAME = "computational-mechanics-solver-v1.5.1-manual.pdf"
 MANUAL_DOWNLOAD_PATH = f"/downloads/{MANUAL_FILENAME}"
 MANUAL_FILE = WEB_ROOT / "downloads" / MANUAL_FILENAME
 

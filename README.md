@@ -42,15 +42,15 @@ Computational Mechanics Solver 是一个带浏览器建模界面的二维静力�
 - 所有账户拥有相同的求解与报告能力；只有 `admin` 角色单独标识。v1.5.1 起不再有套餐、权益门控、充值或内部测试通道。
 - PINN 求解器仍为**开发中**，界面中保持禁用。
 
-## 历史说明书
+## 用户与技术说明书
 
-仓库只保留一份公开用户说明书：
+仓库只保留一份公开用户与技术说明书：
 
-`web/downloads/computational-mechanics-solver-v1.3.2-manual.pdf`
+`web/downloads/computational-mechanics-solver-v1.5.1-manual.pdf`
 
-页面下载地址为 `/downloads/computational-mechanics-solver-v1.3.2-manual.pdf`。这是**适用于 v1.3.2 的历史版本说明书**，不完整覆盖 v1.5.0 的云账户、Plus/Pro、内测通道、碰撞、刚体转动、约束轨道和变化场。v1.5.0 新功能以主页更新公告和 `RELEASE_NOTES_v1.5.0.md` 为准。
+页面下载地址为 `/downloads/computational-mechanics-solver-v1.5.1-manual.pdf`，覆盖 v1.5.1 的极简双主题工作台、静力学斜支座与混合杆件求解、二维同步刚体接触、约束轨道滚动、受控 AST 变化场、服务器账户安全会话以及实机验证算例。
 
-维护源位于 `docs/manual/v1.3.2/manual-source.md`；生成 DOCX 仅作为本地中间文件，不提交仓库。
+维护源位于 `docs/manual/v1.5.1/manual-source.md`；生成 DOCX 仅作为本地中间文件，不提交仓库。
 
 ## 本地运行
 
